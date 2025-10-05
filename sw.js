@@ -7,6 +7,7 @@ const urlsToCache = [
 // Установка Service Worker
 self.addEventListener('install', event => {
   console.log('Service Worker: Установка...');
+  self.skipWaiting(); // Активировать немедленно
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then(cache => {
@@ -29,7 +30,7 @@ self.addEventListener('activate', event => {
           }
         })
       );
-    })
+    }).then(() => self.clients.claim())
   );
 });
 
@@ -38,13 +39,35 @@ self.addEventListener('fetch', event => {
   event.respondWith(
     caches.match(event.request)
       .then(response => {
-        // Возвращаем из кэша или делаем запрос
         return response || fetch(event.request);
       })
   );
 });
 
-// Push-уведомления
+// Прием сообщений от приложения
+self.addEventListener('message', event => {
+  console.log('Service Worker получил сообщение:', event.data);
+  
+  if (event.data && event.data.type === 'NEW_MESSAGE') {
+    const { sender, text, chatId } = event.data;
+    
+    // Показываем уведомление
+    self.registration.showNotification(sender, {
+      body: text,
+      icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
+      badge: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
+      tag: 'message-' + chatId,
+      requireInteraction: false,
+      vibrate: [200, 100, 200],
+      data: {
+        chatId: chatId,
+        url: '/'
+      }
+    });
+  }
+});
+
+// Push-уведомления (для FCM)
 self.addEventListener('push', event => {
   console.log('Push-уведомление получено:', event);
   
@@ -95,7 +118,7 @@ self.addEventListener('notificationclick', event => {
       .then(clientList => {
         // Если окно уже открыто - фокусируемся на нем
         for (let client of clientList) {
-          if (client.url === '/' && 'focus' in client) {
+          if (client.url.includes(self.location.origin) && 'focus' in client) {
             return client.focus();
           }
         }
