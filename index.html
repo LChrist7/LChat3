@@ -16,7 +16,8 @@
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-        import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, getDocs, limit } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+        import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, getDocs, limit, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+        import { getMessaging, getToken, onMessage } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js';
         
         const firebaseConfig = {
             apiKey: "AIzaSyD-JW_GPcXYE6Mo87wKDAKKtRSwIGzLp5g",
@@ -31,10 +32,19 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
         
+        // Messaging для push-уведомлений
+        let messaging = null;
+        try {
+            messaging = getMessaging(app);
+        } catch (error) {
+            console.warn('Firebase Messaging не поддерживается:', error);
+        }
+        
         // Экспортируем в window для использования в React
         window.firebaseApp = app;
         window.firebaseAuth = auth;
         window.firebaseDb = db;
+        window.firebaseMessaging = messaging;
         window.firebaseFunctions = {
             createUserWithEmailAndPassword,
             signInWithEmailAndPassword,
@@ -51,7 +61,10 @@
             addDoc,
             serverTimestamp,
             getDocs,
-            limit
+            limit,
+            deleteDoc,
+            getToken,
+            onMessage
         };
         window.firebaseReady = true;
         
@@ -88,16 +101,31 @@
             const [showNewChat, setShowNewChat] = useState(false);
             const [showMobileChat, setShowMobileChat] = useState(false);
             const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+            const [fcmToken, setFcmToken] = useState(null);
 
-            // Регистрация Service Worker и запрос разрешения на уведомления
+            // Получение или создание уникального ID устройства
+            const getDeviceId = () => {
+                let deviceId = localStorage.getItem('deviceId');
+                if (!deviceId) {
+                    deviceId = 'device_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                    localStorage.setItem('deviceId', deviceId);
+                }
+                return deviceId;
+            };
+
+            // Регистрация Service Worker для FCM
             useEffect(() => {
                 if ('serviceWorker' in navigator) {
-                    navigator.serviceWorker.register('/sw.js')
-                        .then(registration => {
-                            console.log('✅ Service Worker зарегистрирован');
+                    // Регистрируем оба Service Worker
+                    Promise.all([
+                        navigator.serviceWorker.register('/sw.js'),
+                        navigator.serviceWorker.register('/firebase-messaging-sw.js')
+                    ])
+                        .then(([swReg, fcmReg]) => {
+                            console.log('✅ Service Workers зарегистрированы');
                         })
                         .catch(error => {
-                            console.error('❌ Ошибка регистрации Service Worker:', error);
+                            console.error('❌ Ошибка регистрации Service Workers:', error);
                         });
                 }
 
@@ -106,6 +134,70 @@
                     setNotificationsEnabled(Notification.permission === 'granted');
                 }
             }, []);
+
+            // Получение FCM токена и сохранение в Firestore
+            const setupFCMToken = async (userId) => {
+                if (!window.firebaseMessaging) {
+                    console.warn('Firebase Messaging не поддерживается');
+                    return;
+                }
+
+                try {
+                    const { getToken } = window.firebaseFunctions;
+                    const messaging = window.firebaseMessaging;
+
+                    // VAPID ключ из Firebase Console
+                    const vapidKey = 'BFT8KODjBs3Su-Hj0OZ06Dp-RWTRW7CpfNSwZe-Q-HmFK29Zm1iJ_4pxS-7YuTAIJ9YMoJs3c5zzrd_4NeIiu_s';
+
+                    const token = await getToken(messaging, { vapidKey });
+                    
+                    if (token) {
+                        console.log('✅ FCM токен получен:', token.substring(0, 20) + '...');
+                        setFcmToken(token);
+
+                        // Сохраняем токен в Firestore
+                        const { doc, setDoc, serverTimestamp } = window.firebaseFunctions;
+                        const deviceId = getDeviceId();
+                        
+                        await setDoc(doc(window.firebaseDb, 'users', userId, 'tokens', deviceId), {
+                            token: token,
+                            deviceId: deviceId,
+                            createdAt: serverTimestamp(),
+                            lastUsed: serverTimestamp(),
+                            userAgent: navigator.userAgent
+                        });
+
+                        console.log('✅ Токен сохранен в Firestore');
+                    } else {
+                        console.log('Не удалось получить токен');
+                    }
+                } catch (error) {
+                    console.error('Ошибка получения FCM токена:', error);
+                }
+            };
+
+            // Удаление FCM токена при выходе
+            const removeFCMToken = async (userId) => {
+                if (!fcmToken || !userId) return;
+
+                try {
+                    const { doc, deleteDoc } = window.firebaseFunctions;
+                    const deviceId = getDeviceId();
+                    
+                    await deleteDoc(doc(window.firebaseDb, 'users', userId, 'tokens', deviceId));
+                    console.log('✅ Токен удален из Firestore');
+                    setFcmToken(null);
+                } catch (error) {
+                    console.error('Ошибка удаления токена:', error);
+                }
+            };
+
+            // Настройка FCM при входе пользователя
+            useEffect(() => {
+                if (user && notificationsEnabled && !fcmToken) {
+                    setupFCMToken(user.uid);
+                }
+            }, [user, notificationsEnabled]);
 
             // Запрос разрешения на уведомления
             const requestNotificationPermission = async () => {
@@ -120,9 +212,15 @@
                     
                     if (permission === 'granted') {
                         console.log('✅ Разрешение на уведомления получено');
+                        
+                        // Получаем FCM токен после получения разрешения
+                        if (user) {
+                            await setupFCMToken(user.uid);
+                        }
+                        
                         // Показываем тестовое уведомление
                         new Notification('Мессенджер', {
-                            body: 'Уведомления включены!',
+                            body: 'Уведомления включены! Теперь вы будете получать push-уведомления даже когда приложение закрыто.',
                             icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E'
                         });
                     } else {
@@ -223,13 +321,23 @@
                                 if (message.senderId !== user.uid) {
                                     const senderLogin = selectedChat.participantsData[message.senderId];
                                     
-                                    // Проверяем, виден ли документ (вкладка активна)
-                                    if (document.hidden) {
-                                        new Notification(`${senderLogin}`, {
-                                            body: message.text,
-                                            icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
-                                            tag: 'message-' + selectedChat.id
+                                    // Отправляем сообщение в Service Worker
+                                    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                                        navigator.serviceWorker.controller.postMessage({
+                                            type: 'NEW_MESSAGE',
+                                            sender: senderLogin,
+                                            text: message.text,
+                                            chatId: selectedChat.id
                                         });
+                                    } else {
+                                        // Fallback для ПК - обычное уведомление
+                                        if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+                                            new Notification(senderLogin, {
+                                                body: message.text,
+                                                icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
+                                                tag: 'message-' + selectedChat.id
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -458,6 +566,11 @@
 
             const handleLogout = async () => {
                 try {
+                    // Удаляем FCM токен перед выходом
+                    if (user) {
+                        await removeFCMToken(user.uid);
+                    }
+                    
                     const { signOut } = window.firebaseFunctions;
                     await signOut(window.firebaseAuth);
                     setUser(null);
@@ -466,6 +579,7 @@
                     setChats([]);
                     setSelectedChat(null);
                     setMessages([]);
+                    setFcmToken(null);
                 } catch (err) {
                     console.error('Ошибка выхода:', err);
                 }
