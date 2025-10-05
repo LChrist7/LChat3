@@ -102,6 +102,13 @@
             const [showMobileChat, setShowMobileChat] = useState(false);
             const [notificationsEnabled, setNotificationsEnabled] = useState(false);
             const [fcmToken, setFcmToken] = useState(null);
+            const [showIOSHint, setShowIOSHint] = useState(false);
+
+            // Проверка iOS
+            const isIOS = () => {
+                return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+                       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            };
 
             // Получение или создание уникального ID устройства
             const getDeviceId = () => {
@@ -246,9 +253,16 @@
                         
                         // Показываем тестовое уведомление
                         new Notification('Мессенджер', {
-                            body: 'Уведомления включены! Теперь вы будете получать push-уведомления даже когда приложение закрыто.',
+                            body: 'Уведомления включены! Теперь вы будете получать push-уведомления.',
                             icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E'
                         });
+
+                        // Показываем подсказку для iOS
+                        if (isIOS()) {
+                            setTimeout(() => {
+                                setShowIOSHint(true);
+                            }, 1000);
+                        }
                     } else {
                         alert('Разрешение на уведомления не получено');
                     }
@@ -635,13 +649,65 @@
                             )}
                         </div>
                     </div>
+                    </>
                 );
             }
 
             // Авторизован - показываем чат
             if (user) {
                 return (
-                    <div className="h-screen flex bg-gray-100">
+                    <>
+                        {/* Подсказка для iOS */}
+                        {showIOSHint && (
+                            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                                <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-md w-full">
+                                    <div className="text-center mb-4">
+                                        <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                            <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                            </svg>
+                                        </div>
+                                        <h3 className="text-xl font-bold text-gray-800 mb-2">
+                                            📱 Для пользователей iOS
+                                        </h3>
+                                    </div>
+                                    
+                                    <div className="space-y-3 text-gray-700 mb-6">
+                                        <p className="text-sm">
+                                            Из-за ограничений iOS Safari, уведомления работают только когда приложение:
+                                        </p>
+                                        <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                                            <p className="text-sm font-medium text-green-800">
+                                                ✅ Открыто или свернуто
+                                            </p>
+                                            <p className="text-xs text-green-600 mt-1">
+                                                Просто нажмите кнопку "Домой"
+                                            </p>
+                                        </div>
+                                        <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                                            <p className="text-sm font-medium text-red-800">
+                                                ❌ Полностью закрыто
+                                            </p>
+                                            <p className="text-xs text-red-600 mt-1">
+                                                Свайп вверх в панели многозадачности
+                                            </p>
+                                        </div>
+                                        <p className="text-xs text-gray-500 mt-3">
+                                            Это ограничение Apple для PWA приложений. На Android уведомления работают всегда! 🎉
+                                        </p>
+                                    </div>
+                                    
+                                    <button
+                                        onClick={() => setShowIOSHint(false)}
+                                        className="w-full bg-indigo-600 text-white py-3 rounded-lg font-medium hover:bg-indigo-700 transition-colors"
+                                    >
+                                        Понятно!
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="h-screen flex bg-gray-100">
                         {/* Список чатов (слева) */}
                         <div className={`${showMobileChat ? 'hidden' : 'flex'} md:flex flex-col w-full md:w-80 bg-white border-r border-gray-200`}>
                             {/* Шапка */}
@@ -678,6 +744,20 @@
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
                                         </svg>
                                         <span>Включить уведомления</span>
+                                    </button>
+                                )}
+                                
+                                {/* Иконка-подсказка для iOS */}
+                                {notificationsEnabled && isIOS() && (
+                                    <button
+                                        onClick={() => setShowIOSHint(true)}
+                                        className="w-full bg-white bg-opacity-20 hover:bg-opacity-30 text-white py-2 px-3 rounded-lg text-xs transition-colors flex items-center justify-center space-x-2"
+                                        title="Информация об уведомлениях на iOS"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <span>Подсказка для iOS</span>
                                     </button>
                                 )}
                             </div>
