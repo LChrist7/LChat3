@@ -8,15 +8,14 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body>
-    <div id="root"></div>
-
-    <script type="text/babel">
-        const { useState, useEffect } = React;
-
-        // Firebase конфигурация
-        const FIREBASE_CONFIG = {
+    
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+        import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+        import { getFirestore, doc, setDoc, getDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+        
+        const firebaseConfig = {
             apiKey: "AIzaSyD-JW_GPcXYE6Mo87wKDAKKtRSwIGzLp5g",
             authDomain: "lchat3-7ad86.firebaseapp.com",
             projectId: "lchat3-7ad86",
@@ -24,51 +23,34 @@
             messagingSenderId: "956958925747",
             appId: "1:956958925747:web:966a2906f540538251a1c6"
         };
-
-        // Глобальное хранилище Firebase
-        const Firebase = {
-            auth: null,
-            db: null,
-            functions: null,
-            initialized: false
+        
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // Экспортируем в window для использования в React
+        window.firebaseApp = app;
+        window.firebaseAuth = auth;
+        window.firebaseDb = db;
+        window.firebaseFunctions = {
+            createUserWithEmailAndPassword,
+            signInWithEmailAndPassword,
+            signOut,
+            onAuthStateChanged,
+            doc,
+            setDoc,
+            getDoc
         };
+        window.firebaseReady = true;
+        
+        console.log('✅ Firebase инициализирован');
+    </script>
+</head>
+<body>
+    <div id="root"></div>
 
-        // Инициализация Firebase
-        async function initFirebase() {
-            if (Firebase.initialized) return;
-            
-            try {
-                console.log('Начинаем инициализацию Firebase...');
-                
-                const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js');
-                const { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } = 
-                    await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js');
-                const { getFirestore, doc, setDoc, getDoc } = 
-                    await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
-                
-                console.log('Firebase модули загружены');
-                
-                const app = initializeApp(FIREBASE_CONFIG);
-                Firebase.auth = getAuth(app);
-                Firebase.db = getFirestore(app);
-                Firebase.functions = { 
-                    createUserWithEmailAndPassword, 
-                    signInWithEmailAndPassword, 
-                    signOut, 
-                    onAuthStateChanged,
-                    doc, 
-                    setDoc, 
-                    getDoc 
-                };
-                
-                Firebase.initialized = true;
-                console.log('✅ Firebase успешно инициализирован');
-            } catch (error) {
-                console.error('❌ Ошибка инициализации Firebase:', error);
-                Firebase.initialized = false;
-                throw error;
-            }
-        }
+    <script type="text/babel">
+        const { useState, useEffect } = React;
 
         // Конвертация логина в email для Firebase
         function loginToEmail(login) {
@@ -84,28 +66,26 @@
             const [loading, setLoading] = useState(false);
             const [initializing, setInitializing] = useState(true);
 
-            // Инициализация Firebase при загрузке
+            // Ожидание инициализации Firebase
             useEffect(() => {
-                let unsubscribe = null;
-                
-                initFirebase()
-                    .then(() => {
-                        console.log('Firebase готов, настраиваем слушатель авторизации...');
-                        const { onAuthStateChanged, doc, getDoc } = Firebase.functions;
+                const checkFirebase = () => {
+                    if (window.firebaseReady) {
+                        console.log('Firebase готов, настраиваем слушатель...');
+                        const { onAuthStateChanged, doc, getDoc } = window.firebaseFunctions;
                         
-                        unsubscribe = onAuthStateChanged(Firebase.auth, async (firebaseUser) => {
+                        const unsubscribe = onAuthStateChanged(window.firebaseAuth, async (firebaseUser) => {
                             console.log('Состояние авторизации:', firebaseUser ? 'Авторизован' : 'Нет');
                             
                             if (firebaseUser) {
                                 try {
-                                    const userDoc = await getDoc(doc(Firebase.db, 'users', firebaseUser.uid));
+                                    const userDoc = await getDoc(doc(window.firebaseDb, 'users', firebaseUser.uid));
                                     
                                     if (userDoc.exists()) {
                                         setUser({
                                             uid: firebaseUser.uid,
                                             login: userDoc.data().login
                                         });
-                                        console.log('Данные пользователя загружены');
+                                        console.log('Данные загружены:', userDoc.data().login);
                                     }
                                 } catch (error) {
                                     console.error('Ошибка загрузки данных:', error);
@@ -115,15 +95,18 @@
                             }
                             setInitializing(false);
                         });
-                    })
-                    .catch((err) => {
-                        console.error('Ошибка инициализации:', err);
-                        setError('Ошибка подключения к Firebase');
-                        setInitializing(false);
-                    });
+                        
+                        return unsubscribe;
+                    } else {
+                        setTimeout(checkFirebase, 100);
+                    }
+                };
                 
+                const unsubscribe = checkFirebase();
                 return () => {
-                    if (unsubscribe) unsubscribe();
+                    if (typeof unsubscribe === 'function') {
+                        unsubscribe();
+                    }
                 };
             }, []);
 
@@ -133,8 +116,8 @@
                 setLoading(true);
 
                 try {
-                    if (!Firebase.initialized || !Firebase.functions) {
-                        throw new Error('Firebase еще не инициализирован');
+                    if (!window.firebaseReady) {
+                        throw new Error('Firebase еще не готов');
                     }
 
                     if (!login || !password) {
@@ -150,20 +133,20 @@
                     }
 
                     const email = loginToEmail(login);
-                    const { createUserWithEmailAndPassword, signInWithEmailAndPassword, doc, setDoc, getDoc } = Firebase.functions;
+                    const { createUserWithEmailAndPassword, signInWithEmailAndPassword, doc, setDoc, getDoc } = window.firebaseFunctions;
 
                     if (isLogin) {
-                        const userCredential = await signInWithEmailAndPassword(Firebase.auth, email, password);
-                        const userDoc = await getDoc(doc(Firebase.db, 'users', userCredential.user.uid));
+                        const userCredential = await signInWithEmailAndPassword(window.firebaseAuth, email, password);
+                        const userDoc = await getDoc(doc(window.firebaseDb, 'users', userCredential.user.uid));
                         
                         setUser({
                             uid: userCredential.user.uid,
                             login: userDoc.data().login
                         });
                     } else {
-                        const userCredential = await createUserWithEmailAndPassword(Firebase.auth, email, password);
+                        const userCredential = await createUserWithEmailAndPassword(window.firebaseAuth, email, password);
                         
-                        await setDoc(doc(Firebase.db, 'users', userCredential.user.uid), {
+                        await setDoc(doc(window.firebaseDb, 'users', userCredential.user.uid), {
                             login: login,
                             createdAt: new Date().toISOString()
                         });
@@ -197,8 +180,8 @@
 
             const handleLogout = async () => {
                 try {
-                    const { signOut } = Firebase.functions;
-                    await signOut(Firebase.auth);
+                    const { signOut } = window.firebaseFunctions;
+                    await signOut(window.firebaseAuth);
                     setUser(null);
                     setLogin('');
                     setPassword('');
@@ -345,10 +328,10 @@
 
                             <button
                                 onClick={handleAuth}
-                                disabled={loading || !Firebase.initialized}
+                                disabled={loading || !window.firebaseReady}
                                 className="w-full bg-indigo-600 text-white py-3 rounded-lg font-medium hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                {loading ? 'Загрузка...' : !Firebase.initialized ? 'Инициализация...' : (isLogin ? 'Войти' : 'Зарегистрироваться')}
+                                {loading ? 'Загрузка...' : !window.firebaseReady ? 'Инициализация...' : (isLogin ? 'Войти' : 'Зарегистрироваться')}
                             </button>
                         </div>
 
