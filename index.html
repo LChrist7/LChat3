@@ -75,7 +75,7 @@
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-        import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, getDocs, limit, deleteDoc, updateDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, getDocs, limit, deleteDoc, updateDoc, arrayUnion } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
         import { getMessaging, getToken, onMessage } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js';
         import { getStorage, ref, uploadBytes, getDownloadURL } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js';
         
@@ -105,31 +105,32 @@
         window.firebaseDb = db;
         window.firebaseStorage = storage;
         window.firebaseMessaging = messaging;
-        window.firebaseFunctions = {
-            createUserWithEmailAndPassword,
-            signInWithEmailAndPassword,
-            signOut,
-            onAuthStateChanged,
-            doc,
-            setDoc,
-            getDoc,
-            collection,
-            query,
-            where,
-            orderBy,
-            onSnapshot,
-            addDoc,
-            serverTimestamp,
-            getDocs,
-            limit,
-            deleteDoc,
-            updateDoc,
-            getToken,
-            onMessage,
-            ref,
-            uploadBytes,
-            getDownloadURL
-        };
+		window.firebaseFunctions = {
+			createUserWithEmailAndPassword,
+			signInWithEmailAndPassword,
+			signOut,
+			onAuthStateChanged,
+			doc,
+			setDoc,
+			getDoc,
+			collection,
+			query,
+			where,
+			orderBy,
+			onSnapshot,
+			addDoc,
+			serverTimestamp,
+			getDocs,
+			limit,
+			deleteDoc,
+			updateDoc,
+			arrayUnion,
+			getToken,
+			onMessage,
+			ref,
+			uploadBytes,
+			getDownloadURL
+		};
         window.firebaseReady = true;
         
         console.log('✅ Firebase инициализирован (с поддержкой звонков)');
@@ -309,24 +310,30 @@
                     const { doc, onSnapshot } = window.firebaseFunctions;
                     const callRef = doc(window.firebaseDb, 'calls', callDoc.id);
                     
-                    const unsubscribe = onSnapshot(callRef, async (snapshot) => {
-                        const data = snapshot.data();
-                        if (!data) return;
-                        
-                        console.log('📞 Обновление звонка:', data.status);
-                        
-                        if (data.status === 'accepted' && data.answer) {
-                            stopRingtone();
-                            console.log('✅ Звонок принят, получен answer');
-                            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-                            setCallState('active');
-                            startCallTimer();
-                        } else if (data.status === 'rejected' || data.status === 'ended') {
-                            stopRingtone();
-                            endCall();
-                            unsubscribe();
-                        }
-                    });
+					let answerProcessed = false; // Флаг для предотвращения повторной обработки
+					const unsubscribe = onSnapshot(callRef, async (snapshot) => {
+						const data = snapshot.data();
+						if (!data) return;
+						
+						console.log('📞 Обновление звонка:', data.status);
+						
+						if (data.status === 'accepted' && data.answer && !answerProcessed) {
+							answerProcessed = true; // Устанавливаем флаг
+							stopRingtone();
+							console.log('✅ Звонок принят, получен answer');
+							try {
+								await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+								setCallState('active');
+								startCallTimer();
+							} catch (error) {
+								console.error('❌ Ошибка установки answer:', error);
+							}
+						} else if (data.status === 'rejected' || data.status === 'ended') {
+							stopRingtone();
+							endCall();
+							unsubscribe();
+						}
+					});
                     
                     // Создаем offer
                     const offer = await peerConnection.createOffer();
@@ -342,18 +349,22 @@
                     }, { merge: true });
                     
                     // Обрабатываем ICE candidates
-                    peerConnection.onicecandidate = async (event) => {
-                        if (event.candidate) {
-                            const { updateDoc, arrayUnion } = window.firebaseFunctions;
-                            try {
-                                await updateDoc(callRef, {
-                                    callerCandidates: arrayUnion(event.candidate.toJSON())
-                                });
-                            } catch (e) {
-                                console.log('Ошибка добавления ICE candidate:', e);
-                            }
-                        }
-                    };
+					peerConnection.onicecandidate = async (event) => {
+						if (event.candidate) {
+							try {
+								const { updateDoc, arrayUnion } = window.firebaseFunctions;
+								if (!arrayUnion) {
+									console.error('❌ arrayUnion не доступен');
+									return;
+								}
+								await updateDoc(callRef, {
+									callerCandidates: arrayUnion(event.candidate.toJSON())
+								});
+							} catch (e) {
+								console.error('❌ Ошибка добавления ICE candidate:', e);
+							}
+						}
+					};
                     
                     // Получаем удаленный стрим
                     peerConnection.ontrack = (event) => {
@@ -462,19 +473,22 @@
                         });
                         
                         // Обрабатываем ICE candidates
-                        peerConnection.onicecandidate = async (event) => {
-                            if (event.candidate) {
-                                try {
-                                    await updateDoc(callRef, {
-                                        recipientCandidates: window.firebaseFunctions.arrayUnion 
-                                            ? window.firebaseFunctions.arrayUnion(event.candidate.toJSON())
-                                            : [event.candidate.toJSON()]
-                                    });
-                                } catch (e) {
-                                    console.log('Ошибка добавления ICE candidate:', e);
-                                }
-                            }
-                        };
+						peerConnection.onicecandidate = async (event) => {
+							if (event.candidate) {
+								try {
+									const { updateDoc, arrayUnion } = window.firebaseFunctions;
+									if (!arrayUnion) {
+										console.error('❌ arrayUnion не доступен');
+										return;
+									}
+									await updateDoc(callRef, {
+										recipientCandidates: arrayUnion(event.candidate.toJSON())
+									});
+								} catch (e) {
+									console.error('❌ Ошибка добавления ICE candidate:', e);
+								}
+							}
+						};
                         
                         setActiveCall({
                             id: incomingCall.id,
