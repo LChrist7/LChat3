@@ -9,6 +9,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <link rel="manifest" href="/manifest.json">
+	<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%234F46E5'/%3E%3Ctext x='50' y='70' font-size='60' text-anchor='middle' fill='white' font-family='Arial, sans-serif' font-weight='bold'%3EM%3C/text%3E%3C/svg%3E">
     <title>Мессенджер</title>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -585,29 +586,32 @@
             };
 
             // Service Worker и остальной код (без изменений)
-            useEffect(() => {
-                if ('serviceWorker' in navigator) {
-                    navigator.serviceWorker.register('/firebase-messaging-sw.js')
-                        .then(registration => {
-                            console.log('✅ Firebase Messaging SW зарегистрирован');
-                            return navigator.serviceWorker.ready;
-                        })
-                        .then(() => {
-                            console.log('✅ Service Worker активирован');
-                            return navigator.serviceWorker.register('/sw.js');
-                        })
-                        .then(() => {
-                            console.log('✅ Cache SW зарегистрирован');
-                        })
-                        .catch(error => {
-                            console.error('❌ Ошибка регистрации SW:', error);
-                        });
-                }
+			useEffect(() => {
+				if ('serviceWorker' in navigator) {
+					// Сначала регистрируем основной SW
+					navigator.serviceWorker.register('/sw.js')
+						.then(registration => {
+							console.log('✅ Cache SW зарегистрирован');
+						})
+						.catch(error => {
+							console.error('❌ Ошибка регистрации Cache SW:', error);
+						});
+					
+					// Затем пробуем Firebase Messaging SW (может не работать на некоторых хостингах)
+					navigator.serviceWorker.register('/firebase-messaging-sw.js')
+						.then(registration => {
+							console.log('✅ Firebase Messaging SW зарегистрирован');
+						})
+						.catch(error => {
+							console.warn('⚠️ Firebase Messaging SW недоступен (это нормально для некоторых хостингов):', error.message);
+							// Это не критичная ошибка, продолжаем работу
+						});
+				}
 
-                if ('Notification' in window) {
-                    setNotificationsEnabled(Notification.permission === 'granted');
-                }
-            }, []);
+				if ('Notification' in window) {
+					setNotificationsEnabled(Notification.permission === 'granted');
+				}
+			}, []);
 
             const setupFCMToken = async (userId) => {
                 if (!window.firebaseMessaging) return;
