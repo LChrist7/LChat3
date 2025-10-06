@@ -10,35 +10,11 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <link rel="manifest" href="/manifest.json">
     <title>Мессенджер</title>
+	<link rel="stylesheet" href="/styles.css">
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        html, body {
-            margin: 0;
-            padding: 0;
-            height: 100%;
-            overflow: hidden;
-            position: fixed;
-            width: 100%;
-            -webkit-overflow-scrolling: touch;
-        }
-        #root {
-            height: 100%;
-            overflow: hidden;
-        }
-        /* Предотвращаем zoom при фокусе на input на iOS */
-        input, textarea, select {
-            font-size: 16px;
-        }
-        @supports (-webkit-touch-callout: none) {
-            /* iOS Safari */
-            body {
-                height: -webkit-fill-available;
-            }
-        }
-    </style>
     
     <!-- Firebase SDK -->
     <script type="module">

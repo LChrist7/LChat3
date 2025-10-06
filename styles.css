@@ -1,0 +1,27 @@
+/* Базовые стили для мессенджера */
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    position: fixed;
+    width: 100%;
+    -webkit-overflow-scrolling: touch;
+}
+
+#root {
+    height: 100%;
+    overflow: hidden;
+}
+
+/* Предотвращаем zoom при фокусе на input на iOS */
+input, textarea, select {
+    font-size: 16px;
+}
+
+@supports (-webkit-touch-callout: none) {
+    /* iOS Safari */
+    body {
+        height: -webkit-fill-available;
+    }
+}
