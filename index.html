@@ -277,6 +277,18 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     // Создаем peer connection
                     const peerConnection = new RTCPeerConnection(iceServers);
                     peerConnectionRef.current = peerConnection;
+					// Мониторинг состояния соединения
+					peerConnection.onconnectionstatechange = () => {
+						console.log('📡 Connection state:', peerConnection.connectionState);
+					};
+
+					peerConnection.oniceconnectionstatechange = () => {
+						console.log('🧊 ICE connection state:', peerConnection.iceConnectionState);
+					};
+
+					peerConnection.onicegatheringstatechange = () => {
+						console.log('🔍 ICE gathering state:', peerConnection.iceGatheringState);
+					};
                     
                     // Добавляем локальный стрим
                     stream.getTracks().forEach(track => {
@@ -366,17 +378,49 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						}
 					};
                     
-                    // Получаем удаленный стрим
-                    peerConnection.ontrack = (event) => {
-                        console.log('✅ Получен удаленный стрим');
-                        remoteStreamRef.current = event.streams[0];
-                        if (remoteAudioRef.current) {
-                            remoteAudioRef.current.srcObject = event.streams[0];
-                        }
-                    };
+					// Получаем удаленный стрим
+					peerConnection.ontrack = (event) => {
+						console.log('✅ Получен удаленный стрим');
+						console.log('📊 Треков в стриме:', event.streams[0].getTracks().length);
+						console.log('📊 Аудио треков:', event.streams[0].getAudioTracks().length);
+						
+						remoteStreamRef.current = event.streams[0];
+						
+						if (remoteAudioRef.current) {
+							console.log('✅ Audio элемент найден');
+							remoteAudioRef.current.srcObject = event.streams[0];
+							
+							// Явно запускаем воспроизведение
+							remoteAudioRef.current.play()
+								.then(() => {
+									console.log('✅ Воспроизведение началось');
+									console.log('🔊 Громкость:', remoteAudioRef.current.volume);
+									console.log('🔇 Muted:', remoteAudioRef.current.muted);
+								})
+								.catch(err => {
+									console.error('❌ Ошибка воспроизведения:', err);
+								});
+						} else {
+							console.error('❌ Audio элемент НЕ найден!');
+						}
+					};
                     
                     // Таймаут 30 секунд
                     setTimeout(() => {
+						// Применяем ICE candidates от получателя
+						const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
+							const data = snapshot.data();
+							if (data && data.recipientCandidates) {
+								for (const candidate of data.recipientCandidates) {
+									try {
+										await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+										console.log('✅ Добавлен ICE candidate от получателя');
+									} catch (e) {
+										console.error('❌ Ошибка добавления ICE candidate:', e);
+									}
+								}
+							}
+						});
                         if (callState === 'calling') {
                             console.log('⏱️ Таймаут звонка');
                             endCall();
@@ -435,20 +479,50 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     // Создаем peer connection
                     const peerConnection = new RTCPeerConnection(iceServers);
                     peerConnectionRef.current = peerConnection;
-                    
+					// Мониторинг состояния соединения
+					peerConnection.onconnectionstatechange = () => {
+						console.log('📡 Connection state:', peerConnection.connectionState);
+					};
+
+					peerConnection.oniceconnectionstatechange = () => {
+						console.log('🧊 ICE connection state:', peerConnection.iceConnectionState);
+					};
+
+					peerConnection.onicegatheringstatechange = () => {
+						console.log('🔍 ICE gathering state:', peerConnection.iceGatheringState);
+					};
+					
                     // Добавляем локальный стрим
                     stream.getTracks().forEach(track => {
                         peerConnection.addTrack(track, stream);
                     });
                     
-                    // Получаем удаленный стрим
-                    peerConnection.ontrack = (event) => {
-                        console.log('✅ Получен удаленный стрим');
-                        remoteStreamRef.current = event.streams[0];
-                        if (remoteAudioRef.current) {
-                            remoteAudioRef.current.srcObject = event.streams[0];
-                        }
-                    };
+					// Получаем удаленный стрим
+					peerConnection.ontrack = (event) => {
+						console.log('✅ Получен удаленный стрим');
+						console.log('📊 Треков в стриме:', event.streams[0].getTracks().length);
+						console.log('📊 Аудио треков:', event.streams[0].getAudioTracks().length);
+						
+						remoteStreamRef.current = event.streams[0];
+						
+						if (remoteAudioRef.current) {
+							console.log('✅ Audio элемент найден');
+							remoteAudioRef.current.srcObject = event.streams[0];
+							
+							// Явно запускаем воспроизведение
+							remoteAudioRef.current.play()
+								.then(() => {
+									console.log('✅ Воспроизведение началось');
+									console.log('🔊 Громкость:', remoteAudioRef.current.volume);
+									console.log('🔇 Muted:', remoteAudioRef.current.muted);
+								})
+								.catch(err => {
+									console.error('❌ Ошибка воспроизведения:', err);
+								});
+						} else {
+							console.error('❌ Audio элемент НЕ найден!');
+						}
+					};
                     
                     // Загружаем offer
                     const { doc, getDoc, setDoc, updateDoc } = window.firebaseFunctions;
@@ -674,6 +748,20 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             useEffect(() => {
                 if (user && notificationsEnabled && !fcmToken) {
                     const timer = setTimeout(() => {
+						// Применяем ICE candidates от звонящего
+						const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
+							const data = snapshot.data();
+							if (data && data.callerCandidates) {
+								for (const candidate of data.callerCandidates) {
+									try {
+										await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+										console.log('✅ Добавлен ICE candidate от звонящего');
+									} catch (e) {
+										console.error('❌ Ошибка добавления ICE candidate:', e);
+									}
+								}
+							}
+						});
                         setupFCMToken(user.uid);
                     }, 1000);
                     return () => clearTimeout(timer);
@@ -1507,7 +1595,15 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                     </div>
                                     
                                     {/* Скрытый audio элемент для удаленного стрима */}
-                                    <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
+									<audio 
+										ref={remoteAudioRef} 
+										autoPlay 
+										playsInline
+										muted={false}
+										volume={1.0}
+										controls
+										style={{ position: 'fixed', bottom: '10px', left: '10px', zIndex: 9999 }}
+									/>
                                 </div>
                             </div>
                         )}
