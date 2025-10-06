@@ -1,0 +1,63 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Пользователи
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId;
+      
+      // FCM токены пользователя
+      match /tokens/{tokenId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow delete: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+    
+    // Чаты
+    match /chats/{chatId} {
+      allow read: if request.auth != null && 
+                     request.auth.uid in resource.data.participants;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null && 
+                       request.auth.uid in resource.data.participants;
+      
+      // Сообщения внутри чатов
+      match /messages/{messageId} {
+        allow read: if request.auth != null &&
+                       request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow create: if request.auth != null &&
+                         request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+      }
+      
+      // Индикатор печатания
+      match /typing/{statusId} {
+        allow read: if request.auth != null &&
+                       request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow write: if request.auth != null &&
+                        request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+      }
+    }
+    
+    // 📞 ЗВОНКИ (НОВОЕ)
+    match /calls/{callId} {
+      // Читать могут только участники звонка
+      allow read: if request.auth != null &&
+                     (request.auth.uid == resource.data.callerId ||
+                      request.auth.uid == resource.data.recipientId);
+      
+      // Создавать может только звонящий
+      allow create: if request.auth != null &&
+                       request.auth.uid == request.resource.data.callerId;
+      
+      // Обновлять могут оба участника
+      allow update: if request.auth != null &&
+                       (request.auth.uid == resource.data.callerId ||
+                        request.auth.uid == resource.data.recipientId);
+      
+      // Удалять может любой участник
+      allow delete: if request.auth != null &&
+                       (request.auth.uid == resource.data.callerId ||
+                        request.auth.uid == resource.data.recipientId);
+    }
+  }
+}
