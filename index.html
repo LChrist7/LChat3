@@ -7,7 +7,7 @@
     <meta name="description" content="Безопасный мессенджер с голосовыми звонками">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <link rel="manifest" href="/manifest.json">
 	<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%234F46E5'/%3E%3Ctext x='50' y='70' font-size='60' text-anchor='middle' fill='white' font-family='Arial, sans-serif' font-weight='bold'%3EM%3C/text%3E%3C/svg%3E">
     <title>Мессенджер</title>
@@ -16,61 +16,80 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        html, body {
-            margin: 0;
-            padding: 0;
-            height: 100%;
-            overflow: hidden;
-            position: fixed;
-            width: 100%;
-            -webkit-overflow-scrolling: touch;
-        }
-        #root {
-            height: 100%;
-            overflow: hidden;
-        }
-        input, textarea, select {
-            font-size: 16px;
-        }
-        @supports (-webkit-touch-callout: none) {
-            body {
-                height: -webkit-fill-available;
-            }
-        }
-        
-        @keyframes pulse-red {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        .recording-pulse {
-            animation: pulse-red 1.5s ease-in-out infinite;
-        }
-        
-        @keyframes sound-wave {
-            0%, 100% { transform: scaleY(0.5); }
-            50% { transform: scaleY(1); }
-        }
-        .sound-wave {
-            animation: sound-wave 0.6s ease-in-out infinite;
-        }
-        
-        @keyframes pulse-ring {
-            0% { transform: scale(0.8); opacity: 1; }
-            100% { transform: scale(1.5); opacity: 0; }
-        }
-        .pulse-ring {
-            animation: pulse-ring 1.5s ease-out infinite;
-        }
-        
-        @keyframes shake {
-            0%, 100% { transform: translateX(0); }
-            25% { transform: translateX(-10px); }
-            75% { transform: translateX(10px); }
-        }
-        .shake {
-            animation: shake 0.5s ease-in-out infinite;
-        }
-    </style>
+		html, body {
+			margin: 0;
+			padding: 0;
+			height: 100%;
+			overflow: hidden;
+			position: fixed;
+			width: 100%;
+			-webkit-overflow-scrolling: touch;
+		}
+		
+		#root {
+			height: 100%;
+			overflow: hidden;
+			/* Учитываем безопасные зоны iOS */
+			padding-top: env(safe-area-inset-top);
+			padding-bottom: env(safe-area-inset-bottom);
+			padding-left: env(safe-area-inset-left);
+			padding-right: env(safe-area-inset-right);
+		}
+		
+		input, textarea, select {
+			font-size: 16px;
+		}
+		
+		@supports (-webkit-touch-callout: none) {
+			body {
+				height: -webkit-fill-available;
+			}
+		}
+		
+		/* Фикс для шапки на iOS */
+		@supports (padding: max(0px)) {
+			.ios-safe-top {
+				padding-top: max(16px, env(safe-area-inset-top));
+			}
+			
+			.ios-safe-bottom {
+				padding-bottom: max(12px, env(safe-area-inset-bottom));
+			}
+		}
+		
+		@keyframes pulse-red {
+			0%, 100% { opacity: 1; }
+			50% { opacity: 0.5; }
+		}
+		.recording-pulse {
+			animation: pulse-red 1.5s ease-in-out infinite;
+		}
+		
+		@keyframes sound-wave {
+			0%, 100% { transform: scaleY(0.5); }
+			50% { transform: scaleY(1); }
+		}
+		.sound-wave {
+			animation: sound-wave 0.6s ease-in-out infinite;
+		}
+		
+		@keyframes pulse-ring {
+			0% { transform: scale(0.8); opacity: 1; }
+			100% { transform: scale(1.5); opacity: 0; }
+		}
+		.pulse-ring {
+			animation: pulse-ring 1.5s ease-out infinite;
+		}
+		
+		@keyframes shake {
+			0%, 100% { transform: translateX(0); }
+			25% { transform: translateX(-10px); }
+			75% { transform: translateX(10px); }
+		}
+		.shake {
+			animation: shake 0.5s ease-in-out infinite;
+		}
+	</style>
     
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
@@ -1645,7 +1664,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                             </div>
                         )}
 
-                        <div className="h-screen flex bg-gray-100">
+                        <div className="h-full flex bg-gray-100" style={{ height: '100%' }}>
                             <div className={`${showMobileChat ? 'hidden' : 'flex'} md:flex flex-col w-full md:w-80 bg-white border-r border-gray-200`}>
                                 <div className="p-4 border-b border-gray-200 bg-indigo-600">
                                     <div className="flex items-center justify-between mb-2">
@@ -1810,7 +1829,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                             <div className={`${!showMobileChat ? 'hidden' : 'flex'} md:flex flex-col flex-1`}>
                                 {selectedChat ? (
                                     <React.Fragment>
-                                        <div className="p-4 bg-white border-b border-gray-200 flex items-center justify-between">
+                                        <div className="p-4 bg-white border-b border-gray-200 flex items-center justify-between ios-safe-top">
                                             <div className="flex items-center">
                                                 <button
                                                     onClick={() => setShowMobileChat(false)}
@@ -1926,7 +1945,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                             )}
                                         </div>
 
-                                        <div className="p-3 sm:p-4 bg-white border-t border-gray-200">
+                                        <div className="p-3 sm:p-4 bg-white border-t border-gray-200 ios-safe-bottom">
                                             {isRecording ? (
                                                 <div className="flex items-center space-x-3 bg-red-50 border border-red-200 rounded-lg p-3">
                                                     <div className="flex items-center space-x-2 flex-1">
