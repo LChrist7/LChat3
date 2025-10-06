@@ -847,7 +847,7 @@
             // Авторизован - показываем чат
             if (user) {
                 return (
-                    <>
+                    <React.Fragment>
                         {/* Подсказка для iOS */}
                         {showIOSHint && (
                             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -899,305 +899,308 @@
                         )}
 
                         <div className="h-screen flex bg-gray-100">
-                        {/* Список чатов (слева) */}
-                        <div className={`${showMobileChat ? 'hidden' : 'flex'} md:flex flex-col w-full md:w-80 bg-white border-r border-gray-200`}>
-                            {/* Шапка */}
-                            <div className="p-4 border-b border-gray-200 bg-indigo-600">
-                                <div className="flex items-center justify-between mb-2">
-                                    <div className="flex items-center space-x-3">
-                                        <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center">
-                                            <span className="text-lg font-bold text-indigo-600">
-                                                {user.login.charAt(0).toUpperCase()}
-                                            </span>
-                                        </div>
-                                        <div>
-                                            <h2 className="text-white font-semibold">{user.login}</h2>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={handleLogout}
-                                        className="text-white hover:text-gray-200"
-                                        title="Выйти"
-                                    >
-                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                                        </svg>
-                                    </button>
-                                </div>
-                                
-                                {/* Кнопка включения уведомлений */}
-                                {!notificationsEnabled && (
-                                    <button
-                                        onClick={requestNotificationPermission}
-                                        className="w-full bg-white bg-opacity-20 hover:bg-opacity-30 text-white py-2 px-3 rounded-lg text-sm font-medium transition-colors flex items-center justify-center space-x-2"
-                                    >
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-                                        </svg>
-                                        <span>Включить уведомления</span>
-                                    </button>
-                                )}
-                                
-                                {/* Иконка-подсказка для iOS */}
-                                {notificationsEnabled && isIOS() && (
-                                    <button
-                                        onClick={() => setShowIOSHint(true)}
-                                        className="w-full bg-white bg-opacity-20 hover:bg-opacity-30 text-white py-2 px-3 rounded-lg text-xs transition-colors flex items-center justify-center space-x-2"
-                                        title="Информация об уведомлениях на iOS"
-                                    >
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <span>Подсказка для iOS</span>
-                                    </button>
-                                )}
-                            </div>
-
-                            {/* Кнопка нового чата */}
-                            <div className="p-3 border-b border-gray-200">
-                                <button
-                                    onClick={() => setShowNewChat(!showNewChat)}
-                                    className="w-full bg-indigo-600 text-white py-2 rounded-lg font-medium hover:bg-indigo-700 transition-colors flex items-center justify-center space-x-2"
-                                >
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                                    </svg>
-                                    <span>Новый чат</span>
-                                </button>
-                            </div>
-
-                            {/* Форма создания чата */}
-                            {showNewChat && (
-                                <div className="p-3 bg-gray-50 border-b border-gray-200">
-                                    <div className="relative">
-                                        <input
-                                            type="text"
-                                            value={searchUser}
-                                            onChange={(e) => setSearchUser(e.target.value)}
-                                            onKeyPress={(e) => {
-                                                if (e.key === 'Enter' && searchUser) {
-                                                    createChat(searchUser);
-                                                }
-                                            }}
-                                            placeholder="Начните вводить логин..."
-                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-sm"
-                                        />
-                                        
-                                        {/* Список подсказок */}
-                                        {searchResults.length > 0 && (
-                                            <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                                                {searchResults.map(result => (
-                                                    <div
-                                                        key={result.id}
-                                                        onClick={() => createChat(result.login, result.id)}
-                                                        className="px-3 py-2 hover:bg-indigo-50 cursor-pointer flex items-center space-x-2 border-b border-gray-100 last:border-b-0"
-                                                    >
-                                                        <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center flex-shrink-0">
-                                                            <span className="text-white text-sm font-bold">
-                                                                {result.login.charAt(0).toUpperCase()}
-                                                            </span>
-                                                        </div>
-                                                        <span className="text-sm font-medium text-gray-800">{result.login}</span>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                        
-                                        {searchUser.length >= 2 && searchResults.length === 0 && (
-                                            <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
-                                                <p className="text-sm text-gray-500 text-center">Пользователи не найдены</p>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Список чатов */}
-                            <div className="flex-1 overflow-y-auto">
-                                {chats.length === 0 ? (
-                                    <div className="p-4 text-center text-gray-500">
-                                        <p className="mb-2">Нет чатов</p>
-                                        <p className="text-sm">Создайте новый чат выше</p>
-                                    </div>
-                                ) : (
-                                    chats.map(chat => {
-                                        const otherUserId = chat.participants.find(id => id !== user.uid);
-                                        const otherUserLogin = chat.participantsData[otherUserId];
-                                        const unreadCount = chat.unreadCount?.[user.uid] || 0;
-                                        const isOnline = onlineUsers[otherUserId]?.online;
-                                        
-                                        return (
-                                            <div
-                                                key={chat.id}
-                                                onClick={() => {
-                                                    setSelectedChat(chat);
-                                                    setShowMobileChat(true);
-                                                }}
-                                                className={`p-4 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${
-                                                    selectedChat?.id === chat.id ? 'bg-indigo-50' : ''
-                                                }`}
-                                            >
-                                                <div className="flex items-center space-x-3">
-                                                    <div className="relative flex-shrink-0">
-                                                        <div className="w-12 h-12 bg-indigo-600 rounded-full flex items-center justify-center">
-                                                            <span className="text-white font-bold">
-                                                                {otherUserLogin?.charAt(0).toUpperCase()}
-                                                            </span>
-                                                        </div>
-                                                        {isOnline && (
-                                                            <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></div>
-                                                        )}
-                                                    </div>
-                                                    <div className="flex-1 min-w-0">
-                                                        <h3 className="font-semibold text-gray-800 truncate">
-                                                            {otherUserLogin}
-                                                        </h3>
-                                                        <p className="text-sm text-gray-500 truncate">
-                                                            {chat.lastMessage || 'Нет сообщений'}
-                                                        </p>
-                                                    </div>
-                                                    {unreadCount > 0 && (
-                                                        <div className="bg-indigo-600 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center flex-shrink-0">
-                                                            {unreadCount > 9 ? '9+' : unreadCount}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        );
-                                    })
-                                )}
-                            </div>
-                        </div>
-
-                        {/* Окно чата (справа) */}
-                        <div className={`${!showMobileChat ? 'hidden' : 'flex'} md:flex flex-col flex-1`}>
-                            {selectedChat ? (
-                                <>
-                                    {/* Шапка чата */}
-                                    <div className="p-4 bg-white border-b border-gray-200 flex items-center">
-                                        <button
-                                            onClick={() => setShowMobileChat(false)}
-                                            className="md:hidden mr-3 text-gray-600"
-                                        >
-                                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                                            </svg>
-                                        </button>
-                                        <div className="relative">
-                                            <div className="w-10 h-10 bg-indigo-600 rounded-full flex items-center justify-center">
-                                                <span className="text-white font-bold">
-                                                    {selectedChat.participantsData[selectedChat.participants.find(id => id !== user.uid)]?.charAt(0).toUpperCase()}
+                            {/* Список чатов (слева) */}
+                            <div className={`${showMobileChat ? 'hidden' : 'flex'} md:flex flex-col w-full md:w-80 bg-white border-r border-gray-200`}>
+                                {/* Шапка */}
+                                <div className="p-4 border-b border-gray-200 bg-indigo-600">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <div className="flex items-center space-x-3">
+                                            <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center">
+                                                <span className="text-lg font-bold text-indigo-600">
+                                                    {user.login.charAt(0).toUpperCase()}
                                                 </span>
                                             </div>
-                                            {onlineUsers[selectedChat.participants.find(id => id !== user.uid)]?.online && (
-                                                <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></div>
+                                            <div>
+                                                <h2 className="text-white font-semibold">{user.login}</h2>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={handleLogout}
+                                            className="text-white hover:text-gray-200"
+                                            title="Выйти"
+                                        >
+                                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    
+                                    {/* Кнопка включения уведомлений */}
+                                    {!notificationsEnabled && (
+                                        <button
+                                            onClick={requestNotificationPermission}
+                                            className="w-full bg-white bg-opacity-20 hover:bg-opacity-30 text-white py-2 px-3 rounded-lg text-sm font-medium transition-colors flex items-center justify-center space-x-2"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                                            </svg>
+                                            <span>Включить уведомления</span>
+                                        </button>
+                                    )}
+                                    
+                                    {/* Иконка-подсказка для iOS */}
+                                    {notificationsEnabled && isIOS() && (
+                                        <button
+                                            onClick={() => setShowIOSHint(true)}
+                                            className="w-full bg-white bg-opacity-20 hover:bg-opacity-30 text-white py-2 px-3 rounded-lg text-xs transition-colors flex items-center justify-center space-x-2"
+                                            title="Информация об уведомлениях на iOS"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                            </svg>
+                                            <span>Подсказка для iOS</span>
+                                        </button>
+                                    )}
+                                </div>
+
+                                {/* Кнопка нового чата */}
+                                <div className="p-3 border-b border-gray-200">
+                                    <button
+                                        onClick={() => setShowNewChat(!showNewChat)}
+                                        className="w-full bg-indigo-600 text-white py-2 rounded-lg font-medium hover:bg-indigo-700 transition-colors flex items-center justify-center space-x-2"
+                                    >
+                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                        </svg>
+                                        <span>Новый чат</span>
+                                    </button>
+                                </div>
+
+                                {/* Форма создания чата */}
+                                {showNewChat && (
+                                    <div className="p-3 bg-gray-50 border-b border-gray-200">
+                                        <div className="relative">
+                                            <input
+                                                type="text"
+                                                value={searchUser}
+                                                onChange={(e) => setSearchUser(e.target.value)}
+                                                onKeyPress={(e) => {
+                                                    if (e.key === 'Enter' && searchUser) {
+                                                        createChat(searchUser);
+                                                    }
+                                                }}
+                                                placeholder="Начните вводить логин..."
+                                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-sm"
+                                            />
+                                            
+                                            {/* Список подсказок */}
+                                            {searchResults.length > 0 && (
+                                                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                                    {searchResults.map(result => (
+                                                        <div
+                                                            key={result.id}
+                                                            onClick={() => createChat(result.login, result.id)}
+                                                            className="px-3 py-2 hover:bg-indigo-50 cursor-pointer flex items-center space-x-2 border-b border-gray-100 last:border-b-0"
+                                                        >
+                                                            <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center flex-shrink-0">
+                                                                <span className="text-white text-sm font-bold">
+                                                                    {result.login.charAt(0).toUpperCase()}
+                                                                </span>
+                                                            </div>
+                                                            <span className="text-sm font-medium text-gray-800">{result.login}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            
+                                            {searchUser.length >= 2 && searchResults.length === 0 && (
+                                                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-3">
+                                                    <p className="text-sm text-gray-500 text-center">Пользователи не найдены</p>
+                                                </div>
                                             )}
                                         </div>
-                                        <div className="ml-3">
-                                            <h3 className="font-semibold text-gray-800">
-                                                {selectedChat.participantsData[selectedChat.participants.find(id => id !== user.uid)]}
-                                            </h3>
-                                            {(() => {
-                                                const otherUserId = selectedChat.participants.find(id => id !== user.uid);
-                                                const isTyping = typingUsers[otherUserId];
-                                                const isOnline = onlineUsers[otherUserId]?.online;
-                                                
-                                                if (isTyping) {
-                                                    return <p className="text-xs text-indigo-600">печатает...</p>;
-                                                } else if (isOnline) {
-                                                    return <p className="text-xs text-green-600">онлайн</p>;
-                                                } else {
-                                                    return <p className="text-xs text-gray-500">офлайн</p>;
-                                                }
-                                            })()}
+                                    </div>
+                                )}
+
+                                {/* Список чатов */}
+                                <div className="flex-1 overflow-y-auto">
+                                    {chats.length === 0 ? (
+                                        <div className="p-4 text-center text-gray-500">
+                                            <p className="mb-2">Нет чатов</p>
+                                            <p className="text-sm">Создайте новый чат выше</p>
                                         </div>
-                                    </div>
-
-                                    {/* Сообщения */}
-                                    <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
-                                        {messages.length === 0 ? (
-                                            <div className="flex items-center justify-center h-full text-gray-500">
-                                                <p>Начните переписку</p>
-                                            </div>
-                                        ) : (
-                                            <>
-                                                {messages.map(message => {
-                                                    const isOwn = message.senderId === user.uid;
-                                                    return (
-                                                        <div
-                                                            key={message.id}
-                                                            className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}
-                                                        >
-                                                            <div
-                                                                className={`max-w-xs md:max-w-md lg:max-w-lg px-4 py-2 rounded-lg break-words ${
-                                                                    isOwn
-                                                                        ? 'bg-indigo-600 text-white'
-                                                                        : 'bg-white text-gray-800 border border-gray-200'
-                                                                }`}
-                                                                style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
-                                                            >
-                                                                <p className="whitespace-pre-wrap">{message.text}</p>
-                                                                <p className={`text-xs mt-1 ${isOwn ? 'text-indigo-200' : 'text-gray-500'}`}>
-                                                                    {message.timestamp?.toDate?.().toLocaleTimeString('ru-RU', {
-                                                                        hour: '2-digit',
-                                                                        minute: '2-digit'
-                                                                    })}
-                                                                </p>
+                                    ) : (
+                                        chats.map(chat => {
+                                            const otherUserId = chat.participants.find(id => id !== user.uid);
+                                            const otherUserLogin = chat.participantsData[otherUserId];
+                                            const unreadCount = chat.unreadCount?.[user.uid] || 0;
+                                            const isOnline = onlineUsers[otherUserId]?.online;
+                                            
+                                            return (
+                                                <div
+                                                    key={chat.id}
+                                                    onClick={() => {
+                                                        setSelectedChat(chat);
+                                                        setShowMobileChat(true);
+                                                    }}
+                                                    className={`p-4 border-b border-gray-200 cursor-pointer hover:bg-gray-50 ${
+                                                        selectedChat?.id === chat.id ? 'bg-indigo-50' : ''
+                                                    }`}
+                                                >
+                                                    <div className="flex items-center space-x-3">
+                                                        <div className="relative flex-shrink-0">
+                                                            <div className="w-12 h-12 bg-indigo-600 rounded-full flex items-center justify-center">
+                                                                <span className="text-white font-bold">
+                                                                    {otherUserLogin?.charAt(0).toUpperCase()}
+                                                                </span>
                                                             </div>
+                                                            {isOnline && (
+                                                                <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></div>
+                                                            )}
                                                         </div>
-                                                    );
-                                                })}
-                                                <div ref={messagesEndRef} />
-                                        )}
-                                    </div>
+                                                        <div className="flex-1 min-w-0">
+                                                            <h3 className="font-semibold text-gray-800 truncate">
+                                                                {otherUserLogin}
+                                                            </h3>
+                                                            <p className="text-sm text-gray-500 truncate">
+                                                                {chat.lastMessage || 'Нет сообщений'}
+                                                            </p>
+                                                        </div>
+                                                        {unreadCount > 0 && (
+                                                            <div className="bg-indigo-600 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center flex-shrink-0">
+                                                                {unreadCount > 9 ? '9+' : unreadCount}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })
+                                    )}
+                                </div>
+                            </div>
 
-                                    {/* Форма отправки */}
-                                    <div className="p-3 sm:p-4 bg-white border-t border-gray-200">
-                                        <div className="flex space-x-2">
-                                            <textarea
-                                                ref={messageInputRef}
-                                                value={newMessage}
-                                                onChange={(e) => {
-                                                    setNewMessage(e.target.value);
-                                                    handleTyping();
-                                                }}
-                                                onKeyPress={handleKeyPress}
-                                                placeholder={`Сообщение для ${selectedChat.participantsData[selectedChat.participants.find(id => id !== user.uid)]}...`}
-                                                rows="1"
-                                                className="flex-1 px-3 sm:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none resize-none"
-                                                style={{ minHeight: '44px', maxHeight: '120px' }}
-                                                onInput={(e) => {
-                                                    e.target.style.height = 'auto';
-                                                    e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
-                                                }}
-                                            />
+                            {/* Окно чата (справа) */}
+                            <div className={`${!showMobileChat ? 'hidden' : 'flex'} md:flex flex-col flex-1`}>
+                                {selectedChat ? (
+                                    <React.Fragment>
+                                        {/* Шапка чата */}
+                                        <div className="p-4 bg-white border-b border-gray-200 flex items-center">
                                             <button
-                                                onClick={sendMessage}
-                                                disabled={!newMessage.trim()}
-                                                className="bg-indigo-600 text-white px-4 sm:px-6 py-2 rounded-lg font-medium hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+                                                onClick={() => setShowMobileChat(false)}
+                                                className="md:hidden mr-3 text-gray-600"
                                             >
-                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                                                 </svg>
                                             </button>
+                                            <div className="relative">
+                                                <div className="w-10 h-10 bg-indigo-600 rounded-full flex items-center justify-center">
+                                                    <span className="text-white font-bold">
+                                                        {selectedChat.participantsData[selectedChat.participants.find(id => id !== user.uid)]?.charAt(0).toUpperCase()}
+                                                    </span>
+                                                </div>
+                                                {onlineUsers[selectedChat.participants.find(id => id !== user.uid)]?.online && (
+                                                    <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></div>
+                                                )}
+                                            </div>
+                                            <div className="ml-3">
+                                                <h3 className="font-semibold text-gray-800">
+                                                    {selectedChat.participantsData[selectedChat.participants.find(id => id !== user.uid)]}
+                                                </h3>
+                                                {(() => {
+                                                    const otherUserId = selectedChat.participants.find(id => id !== user.uid);
+                                                    const isTyping = typingUsers[otherUserId];
+                                                    const isOnline = onlineUsers[otherUserId]?.online;
+                                                    
+                                                    if (isTyping) {
+                                                        return <p className="text-xs text-indigo-600">печатает...</p>;
+                                                    } else if (isOnline) {
+                                                        return <p className="text-xs text-green-600">онлайн</p>;
+                                                    } else {
+                                                        return <p className="text-xs text-gray-500">офлайн</p>;
+                                                    }
+                                                })()}
+                                            </div>
                                         </div>
-                                        <p className="text-xs text-gray-500 mt-2">
-                                            Enter - отправить • Shift+Enter - новая строка
-                                        </p>
+
+                                        {/* Сообщения */}
+                                        <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
+                                            {messages.length === 0 ? (
+                                                <div className="flex items-center justify-center h-full text-gray-500">
+                                                    <p>Начните переписку</p>
+                                                </div>
+                                            ) : (
+                                                <React.Fragment>
+                                                    {messages.map(message => {
+                                                        const isOwn = message.senderId === user.uid;
+                                                        return (
+                                                            <div
+                                                                key={message.id}
+                                                                className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}
+                                                            >
+                                                                <div
+                                                                    className={`max-w-xs md:max-w-md lg:max-w-lg px-4 py-2 rounded-lg break-words ${
+                                                                        isOwn
+                                                                            ? 'bg-indigo-600 text-white'
+                                                                            : 'bg-white text-gray-800 border border-gray-200'
+                                                                    }`}
+                                                                    style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
+                                                                >
+                                                                    <p className="whitespace-pre-wrap">{message.text}</p>
+                                                                    <p className={`text-xs mt-1 ${isOwn ? 'text-indigo-200' : 'text-gray-500'}`}>
+                                                                        {message.timestamp?.toDate?.().toLocaleTimeString('ru-RU', {
+                                                                            hour: '2-digit',
+                                                                            minute: '2-digit'
+                                                                        })}
+                                                                    </p>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                    <div ref={messagesEndRef} />
+                                                </React.Fragment>
+                                            )}
+                                        </div>
+
+                                        {/* Форма отправки */}
+                                        <div className="p-3 sm:p-4 bg-white border-t border-gray-200">
+                                            <div className="flex space-x-2">
+                                                <textarea
+                                                    ref={messageInputRef}
+                                                    value={newMessage}
+                                                    onChange={(e) => {
+                                                        setNewMessage(e.target.value);
+                                                        handleTyping();
+                                                    }}
+                                                    onKeyPress={handleKeyPress}
+                                                    placeholder={`Сообщение для ${selectedChat.participantsData[selectedChat.participants.find(id => id !== user.uid)]}...`}
+                                                    rows="1"
+                                                    className="flex-1 px-3 sm:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none resize-none"
+                                                    style={{ minHeight: '44px', maxHeight: '120px' }}
+                                                    onInput={(e) => {
+                                                        e.target.style.height = 'auto';
+                                                        e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+                                                    }}
+                                                />
+                                                <button
+                                                    onClick={sendMessage}
+                                                    disabled={!newMessage.trim()}
+                                                    className="bg-indigo-600 text-white px-4 sm:px-6 py-2 rounded-lg font-medium hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+                                                >
+                                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                            <p className="text-xs text-gray-500 mt-2">
+                                                Enter - отправить • Shift+Enter - новая строка
+                                            </p>
+                                        </div>
+                                    </React.Fragment>
+                                ) : (
+                                    <div className="flex items-center justify-center h-full bg-gray-50">
+                                        <div className="text-center text-gray-500">
+                                            <svg className="w-24 h-24 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                            </svg>
+                                            <p className="text-lg font-medium">Выберите чат</p>
+                                            <p className="text-sm mt-1">Выберите чат слева или создайте новый</p>
+                                        </div>
                                     </div>
-                            ) : (
-                                <div className="flex items-center justify-center h-full bg-gray-50">
-                                    <div className="text-center text-gray-500">
-                                        <svg className="w-24 h-24 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                                        </svg>
-                                        <p className="text-lg font-medium">Выберите чат</p>
-                                        <p className="text-sm mt-1">Выберите чат слева или создайте новый</p>
-                                    </div>
-                                </div>
-                            )}
+                                )}
+                            </div>
                         </div>
-                    </div>
+                    </React.Fragment>
                 );
             }
 
