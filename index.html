@@ -178,7 +178,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             // 📞 ЗВОНКИ
             const [incomingCall, setIncomingCall] = useState(null);
             const [activeCall, setActiveCall] = useState(null);
-            const [callState, setCallState] = useState(null); // 'calling', 'ringing', 'active', 'ended'
+            const [callState, setCallState] = useState(null);
             const [isMuted, setIsMuted] = useState(false);
             const [callDuration, setCallDuration] = useState(0);
             
@@ -218,7 +218,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 return deviceId;
             };
 
-            // 🔊 Создание рингтона (простой звук)
             const createRingtone = () => {
                 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const oscillator = audioContext.createOscillator();
@@ -227,7 +226,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 oscillator.connect(gainNode);
                 gainNode.connect(audioContext.destination);
                 
-                oscillator.frequency.value = 440; // Нота A
+                oscillator.frequency.value = 440;
                 gainNode.gain.value = 0.3;
                 
                 return { audioContext, oscillator, gainNode };
@@ -250,7 +249,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             };
 
-            // 📞 WebRTC Configuration
             const iceServers = {
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' },
@@ -259,25 +257,21 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 ]
             };
 
-            // 📞 Инициировать звонок
             const initiateCall = async (recipientId, recipientLogin) => {
                 try {
                     console.log('📞 Инициируем звонок к:', recipientLogin);
                     
-                    // Проверка что пользователь онлайн
                     if (!onlineUsers[recipientId]?.online) {
                         alert('Пользователь оффлайн. Звонки работают только когда оба пользователя онлайн.');
                         return;
                     }
                     
-                    // Получаем доступ к микрофону
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     localStreamRef.current = stream;
                     
-                    // Создаем peer connection
                     const peerConnection = new RTCPeerConnection(iceServers);
                     peerConnectionRef.current = peerConnection;
-					// Мониторинг состояния соединения
+					
 					peerConnection.onconnectionstatechange = () => {
 						console.log('📡 Connection state:', peerConnection.connectionState);
 					};
@@ -290,12 +284,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						console.log('🔍 ICE gathering state:', peerConnection.iceGatheringState);
 					};
                     
-                    // Добавляем локальный стрим
                     stream.getTracks().forEach(track => {
                         peerConnection.addTrack(track, stream);
                     });
                     
-                    // Создаем документ звонка в Firestore
                     const { collection, addDoc, serverTimestamp } = window.firebaseFunctions;
                     const callsRef = collection(window.firebaseDb, 'calls');
                     const callDoc = await addDoc(callsRef, {
@@ -318,20 +310,19 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     setCallState('calling');
                     playRingtone();
                     
-                    // Слушаем обновления звонка
                     const { doc, onSnapshot } = window.firebaseFunctions;
                     const callRef = doc(window.firebaseDb, 'calls', callDoc.id);
                     
-					let answerProcessed = false; // Флаг для предотвращения повторной обработки
-					const unsubscribers = []; // Массив для всех подписок
-					const unsubscribe = onSnapshot(callRef, async (snapshot) => {
+					let answerProcessed = false;
+					
+					const callStatusUnsubscribe = onSnapshot(callRef, async (snapshot) => {
 						const data = snapshot.data();
 						if (!data) return;
 						
 						console.log('📞 Обновление звонка:', data.status);
 						
 						if (data.status === 'accepted' && data.answer && !answerProcessed) {
-							answerProcessed = true; // Устанавливаем флаг
+							answerProcessed = true;
 							stopRingtone();
 							console.log('✅ Звонок принят, получен answer');
 							try {
@@ -343,17 +334,13 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 							}
 						} else if (data.status === 'rejected' || data.status === 'ended') {
 							stopRingtone();
-							// Отписываемся от всех подписок
-							unsubscribers.forEach(unsub => unsub());
 							endCall();
 						}
 					});
                     
-                    // Создаем offer
                     const offer = await peerConnection.createOffer();
                     await peerConnection.setLocalDescription(offer);
                     
-                    // Сохраняем offer
                     const { setDoc } = window.firebaseFunctions;
                     await setDoc(callRef, {
                         offer: {
@@ -362,8 +349,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         }
                     }, { merge: true });
                     
-					
-                    // Обрабатываем ICE candidates
 					peerConnection.onicecandidate = async (event) => {
 						if (event.candidate) {
 							try {
@@ -381,7 +366,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						}
 					};
                     
-					// Получаем удаленный стрим
 					peerConnection.ontrack = (event) => {
 						console.log('✅ Получен удаленный стрим');
 						console.log('📊 Треков в стриме:', event.streams[0].getTracks().length);
@@ -393,11 +377,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 							console.log('✅ Audio элемент найден');
 							remoteAudioRef.current.srcObject = event.streams[0];
 							
-							// Явно запускаем воспроизведение
 							remoteAudioRef.current.play()
 								.then(() => {
 									console.log('✅ Воспроизведение началось');
-									console.log('🔊 Громкость:', remoteAudioRef.current.volume);
+									console.log('📊 Громкость:', remoteAudioRef.current.volume);
 									console.log('🔇 Muted:', remoteAudioRef.current.muted);
 								})
 								.catch(err => {
@@ -408,18 +391,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						}
 					};
                     
-                    // Таймаут 30 секунд
-                    setTimeout(() => {
-					// Применяем ICE candidates от получателя
 					const processedCandidates = new Set();
-					const { onSnapshot } = window.firebaseFunctions;
 					const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
 						const data = snapshot.data();
 						
-						// Проверяем что соединение не закрыто
 						if (peerConnection.signalingState === 'closed') {
 							console.log('⚠️ Соединение закрыто, пропускаем candidates');
-							candidatesUnsubscribe();
 							return;
 						}
 						
@@ -434,17 +411,16 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 											console.log('✅ Добавлен ICE candidate от получателя');
 										}
 									} catch (e) {
-										if (e.message.includes('closed')) {
-											candidatesUnsubscribe();
-										} else {
-											console.error('❌ Ошибка добавления ICE candidate:', e);
-										}
+										console.error('❌ Ошибка добавления ICE candidate:', e);
 									}
 								}
 							}
 						}
 					});
-					window.activeCallUnsubscribers = [unsubscribe, candidatesUnsubscribe];
+					
+					window.activeCallUnsubscribers = [callStatusUnsubscribe, candidatesUnsubscribe];
+                    
+                    setTimeout(() => {
                         if (callState === 'calling') {
                             console.log('⏱️ Таймаут звонка');
                             endCall();
@@ -458,7 +434,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             };
 
-            // 📞 Слушаем входящие звонки
             useEffect(() => {
                 if (!user) return;
                 
@@ -488,7 +463,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 return () => unsubscribe();
             }, [user]);
 
-            // 📞 Принять звонок
             const acceptCall = async () => {
                 try {
                     if (!incomingCall) return;
@@ -496,14 +470,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     console.log('📞 Принимаем звонок:', incomingCall.id);
                     stopRingtone();
                     
-                    // Получаем доступ к микрофону
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     localStreamRef.current = stream;
                     
-                    // Создаем peer connection
                     const peerConnection = new RTCPeerConnection(iceServers);
                     peerConnectionRef.current = peerConnection;
-					// Мониторинг состояния соединения
+					
 					peerConnection.onconnectionstatechange = () => {
 						console.log('📡 Connection state:', peerConnection.connectionState);
 					};
@@ -516,12 +488,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						console.log('🔍 ICE gathering state:', peerConnection.iceGatheringState);
 					};
 					
-                    // Добавляем локальный стрим
                     stream.getTracks().forEach(track => {
                         peerConnection.addTrack(track, stream);
                     });
                     
-					// Получаем удаленный стрим
 					peerConnection.ontrack = (event) => {
 						console.log('✅ Получен удаленный стрим');
 						console.log('📊 Треков в стриме:', event.streams[0].getTracks().length);
@@ -533,11 +503,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 							console.log('✅ Audio элемент найден');
 							remoteAudioRef.current.srcObject = event.streams[0];
 							
-							// Явно запускаем воспроизведение
 							remoteAudioRef.current.play()
 								.then(() => {
 									console.log('✅ Воспроизведение началось');
-									console.log('🔊 Громкость:', remoteAudioRef.current.volume);
+									console.log('📊 Громкость:', remoteAudioRef.current.volume);
 									console.log('🔇 Muted:', remoteAudioRef.current.muted);
 								})
 								.catch(err => {
@@ -548,7 +517,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						}
 					};
                     
-                    // Загружаем offer
                     const { doc, getDoc, setDoc, updateDoc } = window.firebaseFunctions;
                     const callRef = doc(window.firebaseDb, 'calls', incomingCall.id);
                     const callSnap = await getDoc(callRef);
@@ -557,11 +525,9 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     if (callData.offer) {
                         await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.offer));
                         
-                        // Создаем answer
                         const answer = await peerConnection.createAnswer();
                         await peerConnection.setLocalDescription(answer);
                         
-                        // Сохраняем answer
                         await updateDoc(callRef, {
                             answer: {
                                 type: answer.type,
@@ -570,8 +536,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                             status: 'accepted'
                         });
                         
-						
-                        // Обрабатываем ICE candidates
 						peerConnection.onicecandidate = async (event) => {
 							if (event.candidate) {
 								try {
@@ -589,6 +553,36 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 							}
 						};
                         
+						const processedCandidates = new Set();
+						const { onSnapshot } = window.firebaseFunctions;
+						const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
+							const data = snapshot.data();
+							
+							if (peerConnection.signalingState === 'closed') {
+								console.log('⚠️ Соединение закрыто, пропускаем candidates');
+								return;
+							}
+							
+							if (data && data.callerCandidates && Array.isArray(data.callerCandidates)) {
+								for (const candidate of data.callerCandidates) {
+									const candidateKey = JSON.stringify(candidate);
+									if (!processedCandidates.has(candidateKey)) {
+										processedCandidates.add(candidateKey);
+										try {
+											if (peerConnection.signalingState !== 'closed') {
+												await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+												console.log('✅ Добавлен ICE candidate от звонящего');
+											}
+										} catch (e) {
+											console.error('❌ Ошибка добавления ICE candidate:', e);
+										}
+									}
+								}
+							}
+						});
+						
+						window.activeCallUnsubscribers = [candidatesUnsubscribe];
+						
                         setActiveCall({
                             id: incomingCall.id,
                             recipientId: incomingCall.callerId,
@@ -608,7 +602,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             };
 
-            // 📞 Отклонить звонок
             const rejectCall = async () => {
                 try {
                     if (!incomingCall) return;
@@ -627,15 +620,13 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     console.error('Ошибка отклонения звонка:', error);
                 }
             };
-
-            // 📞 Завершить звонок
 			
             const endCall = async () => {
                 try {
                     console.log('📞 Завершаем звонок');
                     
                     stopRingtone();
-					// НОВОЕ: Отписываемся от всех подписок Firestore
+					
 					if (window.activeCallUnsubscribers && window.activeCallUnsubscribers.length > 0) {
 						console.log('🔌 Отписываемся от', window.activeCallUnsubscribers.length, 'подписок');
 						window.activeCallUnsubscribers.forEach(unsub => {
@@ -648,25 +639,21 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						window.activeCallUnsubscribers = [];
 					}
             
-                    // Останавливаем таймер
                     if (callTimerRef.current) {
                         clearInterval(callTimerRef.current);
                         callTimerRef.current = null;
                     }
                     
-                    // Закрываем peer connection
                     if (peerConnectionRef.current) {
                         peerConnectionRef.current.close();
                         peerConnectionRef.current = null;
                     }
                     
-                    // Останавливаем локальный стрим
                     if (localStreamRef.current) {
                         localStreamRef.current.getTracks().forEach(track => track.stop());
                         localStreamRef.current = null;
                     }
                     
-                    // Обновляем статус в Firestore
                     if (activeCall) {
                         const { doc, updateDoc } = window.firebaseFunctions;
                         const callRef = doc(window.firebaseDb, 'calls', activeCall.id);
@@ -686,7 +673,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             };
 
-            // 📞 Mute/Unmute
             const toggleMute = () => {
                 if (localStreamRef.current) {
                     const audioTrack = localStreamRef.current.getAudioTracks()[0];
@@ -697,24 +683,20 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             };
 
-            // 📞 Таймер звонка
             const startCallTimer = () => {
                 callTimerRef.current = setInterval(() => {
                     setCallDuration(prev => prev + 1);
                 }, 1000);
             };
 
-            // Форматирование времени звонка
             const formatCallDuration = (seconds) => {
                 const mins = Math.floor(seconds / 60);
                 const secs = seconds % 60;
                 return `${mins}:${secs.toString().padStart(2, '0')}`;
             };
 
-            // Service Worker и остальной код (без изменений)
 			useEffect(() => {
 				if ('serviceWorker' in navigator) {
-					// Сначала регистрируем основной SW
 					navigator.serviceWorker.register('/sw.js')
 						.then(registration => {
 							console.log('✅ Cache SW зарегистрирован');
@@ -723,14 +705,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 							console.error('❌ Ошибка регистрации Cache SW:', error);
 						});
 					
-					// Затем пробуем Firebase Messaging SW (может не работать на некоторых хостингах)
 					navigator.serviceWorker.register('/firebase-messaging-sw.js')
 						.then(registration => {
 							console.log('✅ Firebase Messaging SW зарегистрирован');
 						})
 						.catch(error => {
 							console.warn('⚠️ Firebase Messaging SW недоступен (это нормально для некоторых хостингов):', error.message);
-							// Это не критичная ошибка, продолжаем работу
 						});
 				}
 
@@ -786,46 +766,11 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             useEffect(() => {
                 if (user && notificationsEnabled && !fcmToken) {
                     const timer = setTimeout(() => {
-					// Применяем ICE candidates от звонящего
-					const processedCandidates = new Set();
-					const { onSnapshot } = window.firebaseFunctions;
-					const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
-						const data = snapshot.data();
-						
-						// Проверяем что соединение не закрыто
-						if (peerConnection.signalingState === 'closed') {
-							console.log('⚠️ Соединение закрыто, пропускаем candidates');
-							candidatesUnsubscribe();
-							return;
-						}
-						
-						if (data && data.callerCandidates && Array.isArray(data.callerCandidates)) {
-							for (const candidate of data.callerCandidates) {
-								const candidateKey = JSON.stringify(candidate);
-								if (!processedCandidates.has(candidateKey)) {
-									processedCandidates.add(candidateKey);
-									try {
-										if (peerConnection.signalingState !== 'closed') {
-											await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-											console.log('✅ Добавлен ICE candidate от звонящего');
-										}
-									} catch (e) {
-										if (e.message.includes('closed')) {
-											candidatesUnsubscribe();
-										} else {
-											console.error('❌ Ошибка добавления ICE candidate:', e);
-										}
-									}
-								}
-							}
-						}
-					});
                         setupFCMToken(user.uid);
                     }, 1000);
                     return () => clearTimeout(timer);
                 }
-				window.activeCallUnsubscribers = [unsubscribe, candidatesUnsubscribe];
-            }, [user, notificationsEnabled]);
+            }, [user, notificationsEnabled, fcmToken]);
 
             const requestNotificationPermission = async () => {
                 if (!('Notification' in window)) {
@@ -856,7 +801,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             };
 
-            // ГОЛОСОВЫЕ СООБЩЕНИЯ (без изменений)
             const startRecording = async () => {
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1068,7 +1012,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 );
             };
 
-            // Остальная логика приложения (auth, chats, messages) - без изменений
             useEffect(() => {
                 const checkFirebase = () => {
                     if (window.firebaseReady) {
@@ -1563,7 +1506,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             if (user) {
                 return (
                     <React.Fragment>
-                        {/* 📞 ЭКРАН ВХОДЯЩЕГО ЗВОНКА */}
                         {incomingCall && (
                             <div className="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center z-50 p-4">
                                 <div className="bg-white rounded-3xl p-8 max-w-sm w-full text-center">
@@ -1607,7 +1549,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                             </div>
                         )}
 
-                        {/* 📞 ЭКРАН АКТИВНОГО ЗВОНКА */}
                         {activeCall && callState && (
                             <div className="fixed inset-0 bg-gradient-to-br from-indigo-900 to-purple-900 flex items-center justify-center z-50 p-4">
                                 <div className="text-center">
@@ -1653,7 +1594,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                         </button>
                                     </div>
                                     
-                                    {/* Скрытый audio элемент для удаленного стрима */}
 									<audio 
 										ref={remoteAudioRef} 
 										autoPlay 
@@ -1906,13 +1846,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                                         } else if (isOnline) {
                                                             return <p className="text-xs text-green-600">онлайн</p>;
                                                         } else {
-                                                            return <p className="text-xs text-gray-500">офлайн</p>;
+                                                            return <p className="text-xs text-gray-500">оффлайн</p>;
                                                         }
                                                     })()}
                                                 </div>
                                             </div>
                                             
-                                            {/* 📞 КНОПКА ЗВОНКА */}
                                             <button
                                                 onClick={() => {
                                                     const otherUserId = selectedChat.participants.find(id => id !== user.uid);
