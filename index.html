@@ -323,6 +323,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     const callRef = doc(window.firebaseDb, 'calls', callDoc.id);
                     
 					let answerProcessed = false; // Флаг для предотвращения повторной обработки
+					const unsubscribers = []; // Массив для всех подписок
 					const unsubscribe = onSnapshot(callRef, async (snapshot) => {
 						const data = snapshot.data();
 						if (!data) return;
@@ -342,8 +343,9 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 							}
 						} else if (data.status === 'rejected' || data.status === 'ended') {
 							stopRingtone();
+							// Отписываемся от всех подписок
+							unsubscribers.forEach(unsub => unsub());
 							endCall();
-							unsubscribe();
 						}
 					});
                     
@@ -360,6 +362,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         }
                     }, { merge: true });
                     
+					window.activeCallUnsubscribers = [unsubscribe, candidatesUnsubscribe];
                     // Обрабатываем ICE candidates
 					peerConnection.onicecandidate = async (event) => {
 						if (event.candidate) {
@@ -407,20 +410,39 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     
                     // Таймаут 30 секунд
                     setTimeout(() => {
-						// Применяем ICE candidates от получателя
-						const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
-							const data = snapshot.data();
-							if (data && data.recipientCandidates) {
-								for (const candidate of data.recipientCandidates) {
+					// Применяем ICE candidates от получателя
+					const processedCandidates = new Set();
+					const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
+						const data = snapshot.data();
+						
+						// Проверяем что соединение не закрыто
+						if (peerConnection.signalingState === 'closed') {
+							console.log('⚠️ Соединение закрыто, пропускаем candidates');
+							candidatesUnsubscribe();
+							return;
+						}
+						
+						if (data && data.recipientCandidates && Array.isArray(data.recipientCandidates)) {
+							for (const candidate of data.recipientCandidates) {
+								const candidateKey = JSON.stringify(candidate);
+								if (!processedCandidates.has(candidateKey)) {
+									processedCandidates.add(candidateKey);
 									try {
-										await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-										console.log('✅ Добавлен ICE candidate от получателя');
+										if (peerConnection.signalingState !== 'closed') {
+											await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+											console.log('✅ Добавлен ICE candidate от получателя');
+										}
 									} catch (e) {
-										console.error('❌ Ошибка добавления ICE candidate:', e);
+										if (e.message.includes('closed')) {
+											candidatesUnsubscribe();
+										} else {
+											console.error('❌ Ошибка добавления ICE candidate:', e);
+										}
 									}
 								}
 							}
-						});
+						}
+					});
                         if (callState === 'calling') {
                             console.log('⏱️ Таймаут звонка');
                             endCall();
@@ -546,6 +568,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                             status: 'accepted'
                         });
                         
+						window.activeCallUnsubscribers = [unsubscribe, candidatesUnsubscribe];
                         // Обрабатываем ICE candidates
 						peerConnection.onicecandidate = async (event) => {
 							if (event.candidate) {
@@ -604,12 +627,25 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             // 📞 Завершить звонок
+			
             const endCall = async () => {
                 try {
                     console.log('📞 Завершаем звонок');
                     
                     stopRingtone();
-                    
+					// НОВОЕ: Отписываемся от всех подписок Firestore
+					if (window.activeCallUnsubscribers && window.activeCallUnsubscribers.length > 0) {
+						console.log('🔌 Отписываемся от', window.activeCallUnsubscribers.length, 'подписок');
+						window.activeCallUnsubscribers.forEach(unsub => {
+							try {
+								unsub();
+							} catch (e) {
+								console.log('Ошибка отписки:', e);
+							}
+						});
+						window.activeCallUnsubscribers = [];
+					}
+            
                     // Останавливаем таймер
                     if (callTimerRef.current) {
                         clearInterval(callTimerRef.current);
@@ -748,20 +784,39 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             useEffect(() => {
                 if (user && notificationsEnabled && !fcmToken) {
                     const timer = setTimeout(() => {
-						// Применяем ICE candidates от звонящего
-						const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
-							const data = snapshot.data();
-							if (data && data.callerCandidates) {
-								for (const candidate of data.callerCandidates) {
+					// Применяем ICE candidates от звонящего
+					const processedCandidates = new Set();
+					const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
+						const data = snapshot.data();
+						
+						// Проверяем что соединение не закрыто
+						if (peerConnection.signalingState === 'closed') {
+							console.log('⚠️ Соединение закрыто, пропускаем candidates');
+							candidatesUnsubscribe();
+							return;
+						}
+						
+						if (data && data.callerCandidates && Array.isArray(data.callerCandidates)) {
+							for (const candidate of data.callerCandidates) {
+								const candidateKey = JSON.stringify(candidate);
+								if (!processedCandidates.has(candidateKey)) {
+									processedCandidates.add(candidateKey);
 									try {
-										await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-										console.log('✅ Добавлен ICE candidate от звонящего');
+										if (peerConnection.signalingState !== 'closed') {
+											await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+											console.log('✅ Добавлен ICE candidate от звонящего');
+										}
 									} catch (e) {
-										console.error('❌ Ошибка добавления ICE candidate:', e);
+										if (e.message.includes('closed')) {
+											candidatesUnsubscribe();
+										} else {
+											console.error('❌ Ошибка добавления ICE candidate:', e);
+										}
 									}
 								}
 							}
-						});
+						}
+					});
                         setupFCMToken(user.uid);
                     }, 1000);
                     return () => clearTimeout(timer);
