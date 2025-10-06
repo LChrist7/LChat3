@@ -362,7 +362,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         }
                     }, { merge: true });
                     
-					window.activeCallUnsubscribers = [unsubscribe, candidatesUnsubscribe];
+					
                     // Обрабатываем ICE candidates
 					peerConnection.onicecandidate = async (event) => {
 						if (event.candidate) {
@@ -412,6 +412,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     setTimeout(() => {
 					// Применяем ICE candidates от получателя
 					const processedCandidates = new Set();
+					const { onSnapshot } = window.firebaseFunctions;
 					const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
 						const data = snapshot.data();
 						
@@ -443,6 +444,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 							}
 						}
 					});
+					window.activeCallUnsubscribers = [unsubscribe, candidatesUnsubscribe];
                         if (callState === 'calling') {
                             console.log('⏱️ Таймаут звонка');
                             endCall();
@@ -568,7 +570,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                             status: 'accepted'
                         });
                         
-						window.activeCallUnsubscribers = [unsubscribe, candidatesUnsubscribe];
+						
                         // Обрабатываем ICE candidates
 						peerConnection.onicecandidate = async (event) => {
 							if (event.candidate) {
@@ -786,6 +788,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     const timer = setTimeout(() => {
 					// Применяем ICE candidates от звонящего
 					const processedCandidates = new Set();
+					const { onSnapshot } = window.firebaseFunctions;
 					const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
 						const data = snapshot.data();
 						
@@ -821,6 +824,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     }, 1000);
                     return () => clearTimeout(timer);
                 }
+				window.activeCallUnsubscribers = [unsubscribe, candidatesUnsubscribe];
             }, [user, notificationsEnabled]);
 
             const requestNotificationPermission = async () => {
