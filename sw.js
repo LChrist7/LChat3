@@ -19,703 +19,238 @@ try {
   console.warn('Firebase Messaging недоступен в Service Worker:', error);
 }
 
-const NOTIFICATION_TTL_MS = 12 * 60 * 60 * 1000;
-const MAX_TRACKED_NOTIFICATIONS = 300;
-const trackedNotificationIds = new Map();
+const CACHE_NAME = 'messenger-v5';
+const RECENT_NOTIFICATION_TTL = 5 * 60 * 1000;
+const recentNotifications = new Map();
 
-const MESSAGE_TRACKING_TTL_MS = 24 * 60 * 60 * 1000;
-const MAX_TRACKED_MESSAGES = 800;
-const handledMessageKeys = new Map();
-
-const DEDUPE_DB_NAME = 'notification-dedupe';
-const DEDUPE_DB_VERSION = 1;
-const HANDLED_STORE = 'handledMessages';
-const NOTIFICATION_STORE = 'notifications';
-
-let dedupeDbPromise = null;
-
-function openDedupeDb() {
-  if (!('indexedDB' in self)) {
-    return Promise.resolve(null);
-  }
-
-  if (!dedupeDbPromise) {
-    dedupeDbPromise = new Promise((resolve, reject) => {
-      const request = indexedDB.open(DEDUPE_DB_NAME, DEDUPE_DB_VERSION);
-
-      request.onupgradeneeded = (event) => {
-        const db = event.target.result;
-        if (!db.objectStoreNames.contains(HANDLED_STORE)) {
-          db.createObjectStore(HANDLED_STORE, { keyPath: 'key' });
-        }
-        if (!db.objectStoreNames.contains(NOTIFICATION_STORE)) {
-          db.createObjectStore(NOTIFICATION_STORE, { keyPath: 'key' });
-        }
-      };
-
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    }).catch((error) => {
-      console.warn('IndexedDB недоступна для дедупликации уведомлений:', error);
-      return null;
-    });
-  }
-
-  return dedupeDbPromise;
-}
-
-async function readRecord(storeName, key) {
-  const db = await openDedupeDb();
-  if (!db) {
-    return null;
-  }
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const store = tx.objectStore(storeName);
-    const request = store.get(key);
-
-    request.onsuccess = () => resolve(request.result || null);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function writeRecord(storeName, record) {
-  const db = await openDedupeDb();
-  if (!db) {
-    return;
-  }
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    store.put(record);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-async function deleteRecord(storeName, key) {
-  const db = await openDedupeDb();
-  if (!db) {
-    return;
-  }
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    store.delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-async function pruneStore(storeName, limit, ttl, now = Date.now()) {
-  const db = await openDedupeDb();
-  if (!db) {
-    return;
-  }
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    const entries = [];
-
-    store.openCursor().onsuccess = (event) => {
-      const cursor = event.target.result;
-      if (cursor) {
-        const value = cursor.value || {};
-        entries.push({ key: cursor.key, timestamp: value.timestamp || 0 });
-        cursor.continue();
-        return;
-      }
-
-      const freshEntries = [];
-
-      for (const entry of entries) {
-        if (now - entry.timestamp > ttl) {
-          store.delete(entry.key);
-        } else {
-          freshEntries.push(entry);
-        }
-      }
-
-      if (freshEntries.length > limit) {
-        freshEntries.sort((a, b) => a.timestamp - b.timestamp);
-        while (freshEntries.length > limit) {
-          const entry = freshEntries.shift();
-          store.delete(entry.key);
-        }
-      }
-    };
-
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-async function pruneTrackedNotifications(now = Date.now()) {
-  for (const [id, timestamp] of trackedNotificationIds.entries()) {
-    if (now - timestamp > NOTIFICATION_TTL_MS) {
-      trackedNotificationIds.delete(id);
+function pruneRecentNotifications(now = Date.now()) {
+  for (const [key, timestamp] of recentNotifications.entries()) {
+    if (now - timestamp > RECENT_NOTIFICATION_TTL) {
+      recentNotifications.delete(key);
     }
   }
-
-  if (trackedNotificationIds.size > MAX_TRACKED_NOTIFICATIONS) {
-    const ordered = [...trackedNotificationIds.entries()].sort((a, b) => a[1] - b[1]);
-    while (ordered.length > MAX_TRACKED_NOTIFICATIONS) {
-      const [oldestId] = ordered.shift();
-      trackedNotificationIds.delete(oldestId);
-    }
-  }
-
-  await pruneStore(NOTIFICATION_STORE, MAX_TRACKED_NOTIFICATIONS, NOTIFICATION_TTL_MS, now);
-}
-
-async function hasTrackedNotification(id) {
-  if (!id) {
-    return false;
-  }
-
-  const now = Date.now();
-  const timestamp = trackedNotificationIds.get(id);
-
-  if (timestamp && now - timestamp <= NOTIFICATION_TTL_MS) {
-    return true;
-  }
-
-  if (timestamp) {
-    trackedNotificationIds.delete(id);
-  }
-
-  try {
-    const record = await readRecord(NOTIFICATION_STORE, id);
-    if (record && record.timestamp && now - record.timestamp <= NOTIFICATION_TTL_MS) {
-      trackedNotificationIds.set(id, record.timestamp);
-      return true;
-    }
-
-    if (record) {
-      await deleteRecord(NOTIFICATION_STORE, id);
-    }
-  } catch (error) {
-    console.warn('Ошибка чтения информации о показанных уведомлениях:', error);
-  }
-
-  return false;
-}
-
-async function trackNotification(id) {
-  if (!id) {
-    return;
-  }
-
-  const now = Date.now();
-  trackedNotificationIds.set(id, now);
-
-  try {
-    await Promise.all([
-      pruneTrackedNotifications(now),
-      writeRecord(NOTIFICATION_STORE, { key: id, timestamp: now })
-    ]);
-  } catch (error) {
-    console.warn('Ошибка сохранения информации о показанном уведомлении:', error);
-  }
-}
-
-async function pruneHandledMessages(now = Date.now()) {
-  for (const [key, timestamp] of handledMessageKeys.entries()) {
-    if (now - timestamp > MESSAGE_TRACKING_TTL_MS) {
-      handledMessageKeys.delete(key);
-    }
-  }
-
-  if (handledMessageKeys.size > MAX_TRACKED_MESSAGES) {
-    const ordered = [...handledMessageKeys.entries()].sort((a, b) => a[1] - b[1]);
-
-    while (ordered.length > MAX_TRACKED_MESSAGES) {
-      const [oldestKey] = ordered.shift();
-      handledMessageKeys.delete(oldestKey);
-    }
-  }
-
-  await pruneStore(HANDLED_STORE, MAX_TRACKED_MESSAGES, MESSAGE_TRACKING_TTL_MS, now);
-}
-
-async function hasHandledMessage(key) {
-  if (!key) {
-    return false;
-  }
-
-  const now = Date.now();
-  const timestamp = handledMessageKeys.get(key);
-
-  if (timestamp && now - timestamp <= MESSAGE_TRACKING_TTL_MS) {
-    return true;
-  }
-
-  if (timestamp) {
-    handledMessageKeys.delete(key);
-  }
-
-  try {
-    const record = await readRecord(HANDLED_STORE, key);
-
-    if (record && record.timestamp && now - record.timestamp <= MESSAGE_TRACKING_TTL_MS) {
-      handledMessageKeys.set(key, record.timestamp);
-      return true;
-    }
-
-    if (record) {
-      await deleteRecord(HANDLED_STORE, key);
-    }
-  } catch (error) {
-    console.warn('Ошибка чтения состояния обработанного сообщения:', error);
-  }
-
-  return false;
-}
-
-async function markMessageHandled(key) {
-  if (!key) {
-    return;
-  }
-
-  const now = Date.now();
-  handledMessageKeys.set(key, now);
-
-  try {
-    await Promise.all([
-      pruneHandledMessages(now),
-      writeRecord(HANDLED_STORE, { key, timestamp: now })
-    ]);
-  } catch (error) {
-    console.warn('Ошибка сохранения обработанного сообщения:', error);
-  }
-}
-
-function normalizeBooleanFlag(value) {
-  return value === true || value === 'true' || value === 1 || value === '1';
-}
-
-function collectMessageKeys({ payload = {}, notificationData = {}, fallbackTag = 'default', fallbackBody = '' } = {}) {
-  const mergedData = { ...(payload.data || {}), ...notificationData };
-  const keys = [];
-
-  const candidates = [
-    mergedData.dedupeKey,
-    mergedData.messageUuid,
-    mergedData.messageUUID,
-    mergedData.messageGuid,
-    mergedData.messageGUID,
-    mergedData.messageId,
-    mergedData.messageID,
-    mergedData.notificationId,
-    mergedData.notificationID,
-    mergedData.id,
-    mergedData.chatMessageId,
-    mergedData.chatMessageID,
-    mergedData.clientMessageId,
-    mergedData.clientMessageID,
-    mergedData.sentAt,
-    mergedData['google.c.a.c_id'],
-    payload.messageId,
-    payload.messageID,
-    payload.fcmMessageId
-  ];
-
-  for (const candidate of candidates) {
-    if (candidate && !keys.includes(candidate)) {
-      keys.push(candidate);
-    }
-  }
-
-  const fallbackKey = `${fallbackTag}:${mergedData.body || fallbackBody || ''}`;
-  if (fallbackKey && !keys.includes(fallbackKey)) {
-    keys.push(fallbackKey);
-  }
-
-  return keys;
-}
-
-async function hasAnyMessageHandled(keys = []) {
-  for (const key of keys) {
-    if (await hasHandledMessage(key)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-async function markMessageKeysHandled(keys = []) {
-  await Promise.all(keys.map((key) => markMessageHandled(key)));
-}
-
-function shouldDisplayCustomNotification(payload = {}, data = {}) {
-  const forceCustom = normalizeBooleanFlag(data.forceCustomNotification);
-  const silent = normalizeBooleanFlag(data.silent);
-  const disableCustom = normalizeBooleanFlag(data.disableCustomNotification);
-  const preferNative = normalizeBooleanFlag(data.preferNativeNotification);
-
-  if (silent || disableCustom) {
-    return false;
-  }
-
-  if (forceCustom) {
-    return true;
-  }
-
-  const hasNotificationPayload = Boolean(payload.notification && Object.keys(payload.notification).length);
-
-  if (hasNotificationPayload && preferNative) {
-    return false;
-  }
-
-  return true;
 }
 
 function resolveNotificationTag(data = {}) {
   return data.tag || `chat-${data.chatId || data.conversationId || data.threadId || 'default'}`;
 }
 
-async function ensureUniqueNotification(tag, messageId) {
-  if (!self.registration || !self.registration.getNotifications) {
-    return true;
-  }
-
-  try {
-    const notifications = await self.registration.getNotifications({ tag, includeTriggered: true });
-    let duplicateFound = false;
-
-    for (const notification of notifications) {
-      const existingId = notification.data?.messageId || notification.data?.dedupeKey;
-
-      if (messageId && existingId === messageId) {
-        duplicateFound = true;
-      } else if (!messageId && notification.tag === tag && !existingId) {
-        duplicateFound = true;
-      } else if (notification.tag === tag && (!messageId || existingId !== messageId)) {
-        notification.close();
-      }
-    }
-
-    return !duplicateFound;
-  } catch (error) {
-    console.warn('Не удалось получить активные уведомления для дедупликации:', error);
-    return true;
-  }
+function extractMessageId(data = {}, fallback) {
+  return (
+    data.messageId ||
+    data.messageID ||
+    data.id ||
+    data.firebaseMessagingMsgId ||
+    data.firebaseMessagingMessageId ||
+    fallback
+  );
 }
 
-async function closeSystemGeneratedNotifications({ tag, title, body }) {
-  if (!self.registration || !self.registration.getNotifications) {
-    return;
+function buildNotificationPayload(payload = {}) {
+  const data = { ...(payload.data || {}) };
+  const notification = payload.notification || {};
+
+  const title = data.title || notification.title || 'Новое сообщение';
+  const body = data.body || notification.body || data.text || '';
+
+  if (!title && !body) {
+    return null;
   }
 
-  try {
-    const notifications = await self.registration.getNotifications({ includeTriggered: true });
+  const tag = resolveNotificationTag(data);
+  const messageId = extractMessageId(data, payload.messageId || payload.messageID);
 
-    for (const notification of notifications) {
-      const notificationData = notification.data || {};
-      const isFcmGenerated = Boolean(
-        notificationData?.FCM_MSG ||
-        notificationData?.firebaseMessagingSenderId ||
-        notificationData?.firebaseMessagingClient ||
-        (typeof notification.tag === 'string' && notification.tag.startsWith('FCM_'))
-      );
-
-      if (!isFcmGenerated) {
-        continue;
-      }
-
-      const sameTag = tag && notification.tag === tag;
-      const sameContent = (
-        title && notification.title === title &&
-        body && notification.body === body
-      );
-
-      if (sameTag || sameContent) {
-        notification.close();
-      }
-    }
-  } catch (error) {
-    console.warn('Не удалось закрыть системные уведомления FCM:', error);
-  }
-}
-
-async function displayNotification({
-  title,
-  body,
-  data = {},
-  tag,
-  requireInteraction = false,
-  vibrate = [200, 100, 200]
-}) {
-  const resolvedTag = tag || resolveNotificationTag(data);
-  const messageId = data.messageId || data.messageID || data.id;
-  const dedupeKey = data.dedupeKey || messageId || `${resolvedTag}:${body || ''}`;
-
-  if (await hasTrackedNotification(dedupeKey)) {
-    return;
-  }
-
-  await trackNotification(dedupeKey);
-
-  if (!(await ensureUniqueNotification(resolvedTag, messageId || dedupeKey))) {
-    return;
-  }
-
-  await closeSystemGeneratedNotifications({ tag: resolvedTag, title, body });
-
-  const notificationOptions = {
+  return {
+    title,
     body,
-    icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
-    badge: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
-    tag: resolvedTag,
+    tag,
     data: {
       ...data,
-      messageId: messageId || dedupeKey,
+      messageId,
+      receivedAt: Date.now()
+    }
+  };
+}
+
+async function showNotificationOnce(notification) {
+  if (!notification) {
+    return;
+  }
+
+  const { title, body, tag, data } = notification;
+  const now = Date.now();
+  const dedupeKey = extractMessageId(data, `${tag}:${body}`);
+
+  pruneRecentNotifications(now);
+
+  if (dedupeKey && recentNotifications.has(dedupeKey)) {
+    return;
+  }
+
+  if (dedupeKey) {
+    recentNotifications.set(dedupeKey, now);
+  }
+
+  const options = {
+    body,
+    tag,
+    data: {
+      ...data,
       dedupeKey,
-      displayedAt: Date.now()
+      displayedAt: now
     },
-    requireInteraction,
-    vibrate,
-    timestamp: Date.now(),
-    renotify: false
+    icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
+    badge: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
+    renotify: false,
+    vibrate: [200, 100, 200]
   };
 
   try {
-    await self.registration.showNotification(title || 'Новое сообщение', notificationOptions);
+    await self.registration.showNotification(title, options);
   } catch (error) {
     console.error('Не удалось показать уведомление:', error);
-    trackedNotificationIds.delete(dedupeKey);
-  }
-}
-
-const CACHE_NAME = 'messenger-v3';
-
-// Установка Service Worker
-self.addEventListener('install', event => {
-  console.log('✅ Cache SW: Установка...');
-  self.skipWaiting(); // Активируемся сразу
-  
-  event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => {
-        console.log('✅ Cache SW: Кэш готов');
-        return Promise.resolve();
-      })
-  );
-});
-
-// Активация Service Worker
-self.addEventListener('activate', event => {
-  console.log('✅ Cache SW: Активация...');
-  event.waitUntil(
-    Promise.all([
-      caches.keys().then(cacheNames => {
-        return Promise.all(
-          cacheNames.map(cacheName => {
-            if (cacheName !== CACHE_NAME) {
-              console.log('🗑️ Удаление старого кэша:', cacheName);
-              return caches.delete(cacheName);
-            }
-          })
-        );
-      }),
-      clients.claim()
-    ])
-  );
-});
-
-// Перехват запросов
-self.addEventListener('fetch', event => {
-  const url = new URL(event.request.url);
-
-  if (url.origin !== self.location.origin || event.request.method !== 'GET') {
-    return;
-  }
-
-  if (event.request.destination === 'document') {
-    event.respondWith(
-      fetch(event.request)
-        .then(response => {
-          if (response && response.status === 200) {
-            const responseClone = response.clone();
-            caches.open(CACHE_NAME).then(cache => {
-              cache.put(event.request, responseClone);
-            });
-          }
-          return response;
-        })
-        .catch(() => {
-          return caches.match(event.request)
-            .then(cachedResponse => {
-              return cachedResponse || new Response('Offline', { status: 503 });
-            });
-        })
-    );
-    return;
-  }
-  
-  // Для остальных - cache first
-  event.respondWith(
-    caches.match(event.request)
-      .then(response => {
-        return response || fetch(event.request)
-          .then(fetchResponse => {
-            if (fetchResponse && fetchResponse.status === 200 && event.request.method === 'GET') {
-              const responseClone = fetchResponse.clone();
-              caches.open(CACHE_NAME).then(cache => {
-                cache.put(event.request, responseClone);
-              });
-            }
-            return fetchResponse;
-          });
-      })
-      .catch(() => new Response('Offline', { status: 503 }))
-  );
-});
-
-async function handleNotificationPayload(payload, source = 'push') {
-  if (!payload) {
-    return;
-  }
-
-  const notificationData = payload.data ? { ...payload.data } : { ...payload };
-
-  if (payload.notification) {
-    notificationData.title = notificationData.title || payload.notification.title;
-    notificationData.body = notificationData.body || payload.notification.body;
-  }
-
-  const title = notificationData.title || 'Новое сообщение';
-  const body = notificationData.body || notificationData.text || 'У вас новое сообщение';
-  const resolvedTag = resolveNotificationTag(notificationData);
-  const messageKeys = collectMessageKeys({
-    payload,
-    notificationData,
-    fallbackTag: resolvedTag,
-    fallbackBody: body
-  });
-
-  if (await hasAnyMessageHandled(messageKeys)) {
-    return;
-  }
-
-  await markMessageKeysHandled(messageKeys);
-
-  const dedupeKey = messageKeys[0];
-
-  if (!shouldDisplayCustomNotification(payload, notificationData)) {
-    return;
-  }
-
-  await displayNotification({
-    title,
-    body,
-    tag: resolvedTag,
-    data: {
-      ...notificationData,
-      messageId: notificationData.messageId || notificationData.messageID || payload.messageId || payload.messageID || dedupeKey,
-      dedupeKey,
-      source,
+    if (dedupeKey) {
+      recentNotifications.delete(dedupeKey);
     }
-  });
+  }
 }
 
 if (messaging) {
   messaging.onBackgroundMessage((payload) => {
-    console.log('Фоновое сообщение получено:', payload);
-    handleNotificationPayload(payload, 'messaging').catch((error) => {
-      console.warn('Ошибка обработки фонового сообщения:', error);
-    });
+    const notification = buildNotificationPayload(payload);
+    return showNotificationOnce(notification);
   });
 }
 
 self.addEventListener('push', (event) => {
+  if (messaging) {
+    return;
+  }
+
   if (!event.data) {
     return;
   }
 
   let payload = {};
-
   try {
     payload = event.data.json();
   } catch (error) {
-    console.warn('Не удалось распарсить push payload как JSON:', error);
-    try {
-      payload = { data: { body: event.data.text() } };
-    } catch (textError) {
-      console.warn('Не удалось извлечь текст из push payload:', textError);
-    }
+    payload = { notification: { title: 'Новое сообщение', body: event.data.text() } };
   }
 
-  if (event.stopImmediatePropagation) {
-    event.stopImmediatePropagation();
-  }
+  const notification = buildNotificationPayload(payload);
 
-  event.waitUntil(handleNotificationPayload(payload, 'push'));
-});
-
-async function handleLocalNotificationMessage(message) {
-  const { sender, text, chatId, messageId } = message;
-
-  const body = text || 'У вас новое сообщение';
-  const tag = resolveNotificationTag({ chatId });
-  const messageKeys = collectMessageKeys({
-    notificationData: { chatId, messageId, body },
-    fallbackTag: tag,
-    fallbackBody: body
-  });
-
-  if (await hasAnyMessageHandled(messageKeys)) {
+  if (!notification) {
     return;
   }
 
-  await markMessageKeysHandled(messageKeys);
+  event.waitUntil(showNotificationOnce(notification));
+});
 
-  const dedupeKey = messageKeys[0];
+self.addEventListener('message', (event) => {
+  if (!event.data || event.data.type !== 'NEW_MESSAGE') {
+    return;
+  }
 
-  await displayNotification({
+  const { sender, text, chatId, messageId } = event.data;
+  const notification = {
     title: sender || 'Новое сообщение',
-    body,
-    tag,
+    body: text || 'У вас новое сообщение',
+    tag: resolveNotificationTag({ chatId }),
     data: {
       chatId,
-      sender,
       messageId,
-      dedupeKey,
       source: 'local'
     }
-  });
-}
+  };
 
-// Прием сообщений для локальных уведомлений
-self.addEventListener('message', event => {
-  if (event.data && event.data.type === 'NEW_MESSAGE') {
-    const promise = handleLocalNotificationMessage(event.data);
-    if (event.waitUntil) {
-      event.waitUntil(promise);
-    }
+  const promise = showNotificationOnce(notification);
+  if (event.waitUntil) {
+    event.waitUntil(promise);
   }
 });
 
-// Клик по уведомлению
-self.addEventListener('notificationclick', event => {
+self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  
+
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true })
-      .then(clientList => {
-        for (let client of clientList) {
-          if (client.url.includes(self.location.origin) && 'focus' in client) {
-            return client.focus();
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ('focus' in client) {
+          return client.focus();
+        }
+      }
+      if (clients.openWindow) {
+        return clients.openWindow('/');
+      }
+      return undefined;
+    })
+  );
+});
+
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+  event.waitUntil(caches.open(CACHE_NAME));
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames.map((cacheName) => {
+          if (cacheName !== CACHE_NAME) {
+            return caches.delete(cacheName);
           }
-        }
-        if (clients.openWindow) {
-          return clients.openWindow('/');
-        }
-      })
+          return undefined;
+        })
+      );
+    }).then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+
+  if (request.method !== 'GET') {
+    return;
+  }
+
+  const url = new URL(request.url);
+
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  if (request.destination === 'document') {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request).then((cached) => cached || new Response('Offline', { status: 503 })))
+    );
+    return;
+  }
+
+  event.respondWith(
+    caches.match(request).then((cached) => {
+      if (cached) {
+        return cached;
+      }
+
+      return fetch(request)
+        .then((response) => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          return response;
+        })
+        .catch(() => new Response('Offline', { status: 503 }));
+    })
   );
 });
