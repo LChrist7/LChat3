@@ -1104,10 +1104,25 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         const unsubscribe = onSnapshot(userRef, (snapshot) => {
                             if (snapshot.exists()) {
                                 const userData = snapshot.data();
+                                const lastSeenValue = userData.lastSeen;
+
+                                let lastSeenMs = null;
+                                if (lastSeenValue) {
+                                    if (typeof lastSeenValue.toMillis === 'function') {
+                                        lastSeenMs = lastSeenValue.toMillis();
+                                    } else if (typeof lastSeenValue.seconds === 'number') {
+                                        lastSeenMs = lastSeenValue.seconds * 1000;
+                                    }
+                                }
+
+                                const isRecent = typeof lastSeenMs === 'number'
+                                    ? (Date.now() - lastSeenMs) <= 60000
+                                    : false;
+
                                 setOnlineUsers(prev => ({
                                     ...prev,
                                     [otherUserId]: {
-                                        online: userData.online || false,
+                                        online: Boolean(userData.online) && isRecent,
                                         lastSeen: userData.lastSeen
                                     }
                                 }));
@@ -1126,30 +1141,110 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 const { doc, setDoc, serverTimestamp } = window.firebaseFunctions;
                 const userRef = doc(window.firebaseDb, 'users', user.uid);
 
-                setDoc(userRef, {
-                    online: true,
-                    lastSeen: serverTimestamp()
-                }, { merge: true });
+                let heartbeatInterval = null;
+                let visibilityTimeout = null;
+                let currentStatus = null;
 
-                const interval = setInterval(() => {
-                    setDoc(userRef, {
-                        online: true,
-                        lastSeen: serverTimestamp()
-                    }, { merge: true });
-                }, 30000);
-
-                const handleBeforeUnload = () => {
-                    setDoc(userRef, {
-                        online: false,
-                        lastSeen: serverTimestamp()
-                    }, { merge: true });
+                const clearHeartbeat = () => {
+                    if (heartbeatInterval) {
+                        clearInterval(heartbeatInterval);
+                        heartbeatInterval = null;
+                    }
                 };
 
+                const updatePresence = (isOnline, options = {}) => {
+                    const { immediate = false } = options;
+
+                    if (currentStatus === isOnline) {
+                        return;
+                    }
+                    currentStatus = isOnline;
+
+                    clearHeartbeat();
+                    if (visibilityTimeout) {
+                        clearTimeout(visibilityTimeout);
+                        visibilityTimeout = null;
+                    }
+
+                    if (isOnline) {
+                        setDoc(userRef, {
+                            online: true,
+                            lastSeen: serverTimestamp()
+                        }, { merge: true });
+
+                        heartbeatInterval = setInterval(() => {
+                            setDoc(userRef, {
+                                online: true,
+                                lastSeen: serverTimestamp()
+                            }, { merge: true });
+                        }, 20000);
+                    } else {
+                        const pushOffline = () => {
+                            setDoc(userRef, {
+                                online: false,
+                                lastSeen: serverTimestamp()
+                            }, { merge: true });
+                        };
+
+                        if (immediate) {
+                            pushOffline();
+                        } else {
+                            // Небольшая задержка защищает от ложных переключений при быстром сворачивании
+                            visibilityTimeout = setTimeout(pushOffline, 1000);
+                        }
+                    }
+                };
+
+                const hasDocumentFocus = () => {
+                    return typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+                };
+
+                const handleVisibilityChange = () => {
+                    if (document.visibilityState === 'visible' && hasDocumentFocus()) {
+                        updatePresence(true);
+                    } else if (document.visibilityState === 'hidden') {
+                        updatePresence(false);
+                    }
+                };
+
+                const handleFocus = () => updatePresence(true);
+                const handleBlur = () => updatePresence(false);
+                const handleBeforeUnload = () => updatePresence(false, { immediate: true });
+                const handlePageHide = () => updatePresence(false, { immediate: true });
+                const handleFreeze = () => updatePresence(false, { immediate: true });
+                const handleOffline = () => updatePresence(false, { immediate: true });
+                const handleOnline = () => {
+                    if (document.visibilityState === 'visible' && hasDocumentFocus()) {
+                        updatePresence(true);
+                    }
+                };
+
+                updatePresence(true);
+
+                window.addEventListener('visibilitychange', handleVisibilityChange);
+                window.addEventListener('focus', handleFocus);
+                window.addEventListener('blur', handleBlur);
                 window.addEventListener('beforeunload', handleBeforeUnload);
+                window.addEventListener('pagehide', handlePageHide);
+                window.addEventListener('freeze', handleFreeze);
+                window.addEventListener('offline', handleOffline);
+                window.addEventListener('online', handleOnline);
 
                 return () => {
-                    clearInterval(interval);
+                    clearHeartbeat();
+                    if (visibilityTimeout) {
+                        clearTimeout(visibilityTimeout);
+                    }
+
+                    window.removeEventListener('visibilitychange', handleVisibilityChange);
+                    window.removeEventListener('focus', handleFocus);
+                    window.removeEventListener('blur', handleBlur);
                     window.removeEventListener('beforeunload', handleBeforeUnload);
+                    window.removeEventListener('pagehide', handlePageHide);
+                    window.removeEventListener('freeze', handleFreeze);
+                    window.removeEventListener('offline', handleOffline);
+                    window.removeEventListener('online', handleOnline);
+
                     setDoc(userRef, {
                         online: false,
                         lastSeen: serverTimestamp()
@@ -1178,7 +1273,20 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                 if (message.senderId !== user.uid) {
                                     const senderLogin = selectedChat.participantsData[message.senderId];
                                     const notifText = message.type === 'audio' ? '🎤 Голосовое сообщение' : message.text;
-                                    
+
+                                    const shouldShowNotification = () => {
+                                        if (typeof document === 'undefined') return true;
+                                        if (document.visibilityState === 'hidden') return true;
+                                        if (typeof document.hasFocus === 'function') {
+                                            return !document.hasFocus();
+                                        }
+                                        return false;
+                                    };
+
+                                    if (!shouldShowNotification()) {
+                                        return;
+                                    }
+
                                     if (navigator.serviceWorker && navigator.serviceWorker.controller) {
                                         navigator.serviceWorker.controller.postMessage({
                                             type: 'NEW_MESSAGE',
