@@ -183,6 +183,15 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const [showNewChat, setShowNewChat] = useState(false);
             const [showMobileChat, setShowMobileChat] = useState(false);
             const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+            const [hasRequestedNotification, setHasRequestedNotification] = useState(() => {
+                if (typeof window === 'undefined') return false;
+                try {
+                    return localStorage.getItem('pwa-notification-requested') === 'true';
+                } catch (error) {
+                    console.warn('Не удалось получить состояние разрешений на уведомления:', error);
+                    return false;
+                }
+            });
             const [fcmToken, setFcmToken] = useState(null);
             const [showIOSHint, setShowIOSHint] = useState(false);
             const [typingUsers, setTypingUsers] = useState({});
@@ -216,8 +225,25 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const ringtoneRef = useRef(null);
 
             const isIOS = () => {
-                return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+                return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
                        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            };
+
+            const isStandaloneMode = () => {
+                if (typeof window === 'undefined') return false;
+                const displayModeStandalone = typeof window.matchMedia === 'function'
+                    ? window.matchMedia('(display-mode: standalone)').matches
+                    : false;
+                return displayModeStandalone || window.navigator.standalone === true;
+            };
+
+            const rememberNotificationRequest = () => {
+                setHasRequestedNotification(true);
+                try {
+                    localStorage.setItem('pwa-notification-requested', 'true');
+                } catch (error) {
+                    console.warn('Не удалось сохранить состояние разрешений на уведомления:', error);
+                }
             };
 
             const scrollToBottom = () => {
@@ -783,13 +809,40 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             useEffect(() => {
-                if (user && notificationsEnabled && !fcmToken) {
-                    const timer = setTimeout(() => {
-                        setupFCMToken(user.uid);
-                    }, 1000);
-                    return () => clearTimeout(timer);
-                }
+                if (!user || !notificationsEnabled || fcmToken) return;
+                if (!isStandaloneMode()) return;
+
+                const timer = setTimeout(() => {
+                    setupFCMToken(user.uid);
+                }, 1000);
+                return () => clearTimeout(timer);
             }, [user, notificationsEnabled, fcmToken]);
+
+            useEffect(() => {
+                if (!user) return;
+                if (!('Notification' in window)) return;
+                if (!isStandaloneMode()) return;
+
+                if (Notification.permission === 'granted') {
+                    setNotificationsEnabled(true);
+                    if (!hasRequestedNotification) {
+                        rememberNotificationRequest();
+                    }
+                    return;
+                }
+
+                if (Notification.permission === 'denied') {
+                    if (!hasRequestedNotification) {
+                        rememberNotificationRequest();
+                    }
+                    setNotificationsEnabled(false);
+                    return;
+                }
+
+                if (Notification.permission === 'default' && !hasRequestedNotification) {
+                    requestNotificationPermission();
+                }
+            }, [user, hasRequestedNotification]);
 
             const requestNotificationPermission = async () => {
                 if (!('Notification' in window)) {
@@ -798,9 +851,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
 
                 try {
+                    rememberNotificationRequest();
                     const permission = await Notification.requestPermission();
                     setNotificationsEnabled(permission === 'granted');
-                    
+
                     if (permission === 'granted') {
                         if (user) {
                             await setupFCMToken(user.uid);
