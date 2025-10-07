@@ -165,7 +165,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+        const { useState, useEffect, useRef, useCallback } = React;
 
         const firebaseServicesPromise = new Promise((resolve, reject) => {
             const handleReady = (event) => {
@@ -282,6 +282,68 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 scrollToBottom();
             }, [messages]);
 
+            useEffect(() => {
+                reportClientStateToServiceWorker();
+            }, [reportClientStateToServiceWorker]);
+
+            useEffect(() => {
+                const handleVisibilityChange = () => {
+                    reportClientStateToServiceWorker({ visible: !document.hidden, focused: document.hasFocus() });
+                };
+
+                const handleFocus = () => {
+                    reportClientStateToServiceWorker({ visible: true, focused: true });
+                };
+
+                const handleBlur = () => {
+                    reportClientStateToServiceWorker({ focused: false });
+                };
+
+                const handlePageHide = () => {
+                    reportClientStateToServiceWorker({ visible: false, focused: false });
+                };
+
+                const handleBeforeUnload = () => {
+                    reportClientStateToServiceWorker({ visible: false, focused: false });
+                };
+
+                document.addEventListener('visibilitychange', handleVisibilityChange);
+                window.addEventListener('focus', handleFocus);
+                window.addEventListener('blur', handleBlur);
+                window.addEventListener('pagehide', handlePageHide);
+                window.addEventListener('beforeunload', handleBeforeUnload);
+
+                return () => {
+                    document.removeEventListener('visibilitychange', handleVisibilityChange);
+                    window.removeEventListener('focus', handleFocus);
+                    window.removeEventListener('blur', handleBlur);
+                    window.removeEventListener('pagehide', handlePageHide);
+                    window.removeEventListener('beforeunload', handleBeforeUnload);
+                };
+            }, [reportClientStateToServiceWorker]);
+
+            const postToServiceWorker = (message) => {
+                if (!('serviceWorker' in navigator) || !message) {
+                    return;
+                }
+
+                const deliver = (registration) => {
+                    const target = navigator.serviceWorker.controller || registration?.active;
+                    if (target && typeof target.postMessage === 'function') {
+                        target.postMessage(message);
+                    }
+                };
+
+                if (navigator.serviceWorker.controller) {
+                    deliver();
+                    return;
+                }
+
+                navigator.serviceWorker.ready
+                    .then(deliver)
+                    .catch(() => {});
+            };
+
             const getDeviceId = () => {
                 let deviceId = localStorage.getItem('deviceId');
                 if (!deviceId) {
@@ -290,6 +352,22 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
                 return deviceId;
             };
+
+            const reportClientStateToServiceWorker = useCallback((overrides = {}) => {
+                if (!('serviceWorker' in navigator)) {
+                    return;
+                }
+
+                postToServiceWorker({
+                    type: 'CLIENT_STATE',
+                    chatId: overrides.chatId !== undefined
+                        ? overrides.chatId
+                        : (selectedChat ? selectedChat.id : null),
+                    visible: overrides.visible !== undefined ? overrides.visible : !document.hidden,
+                    focused: overrides.focused !== undefined ? overrides.focused : document.hasFocus(),
+                    timestamp: Date.now()
+                });
+            }, [selectedChat]);
 
             const createRingtone = () => {
                 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -1377,8 +1455,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                     const senderLogin = selectedChat.participantsData[message.senderId];
                                     const notifText = message.type === 'audio' ? '🎤 Голосовое сообщение' : message.text;
 
-                                    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-                                        navigator.serviceWorker.controller.postMessage({
+                                    if ('serviceWorker' in navigator && document.hidden) {
+                                        postToServiceWorker({
                                             type: 'NEW_MESSAGE',
                                             sender: senderLogin,
                                             text: notifText,

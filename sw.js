@@ -21,7 +21,17 @@ try {
 
 const CACHE_NAME = 'messenger-v5';
 const RECENT_NOTIFICATION_TTL = 5 * 60 * 1000;
+const RECENT_TAG_TTL = 15 * 1000;
+const CLIENT_STATE_TTL = 30 * 1000;
 const recentNotifications = new Map();
+const recentTags = new Map();
+
+const clientState = {
+  visible: false,
+  focused: false,
+  chatId: null,
+  timestamp: 0
+};
 
 function pruneRecentNotifications(now = Date.now()) {
   for (const [key, timestamp] of recentNotifications.entries()) {
@@ -29,6 +39,49 @@ function pruneRecentNotifications(now = Date.now()) {
       recentNotifications.delete(key);
     }
   }
+
+  for (const [tag, timestamp] of recentTags.entries()) {
+    if (now - timestamp > RECENT_TAG_TTL) {
+      recentTags.delete(tag);
+    }
+  }
+}
+
+function updateClientState(update = {}) {
+  const now = Date.now();
+
+  if (typeof update.visible === 'boolean') {
+    clientState.visible = update.visible;
+    if (!update.visible) {
+      clientState.focused = false;
+    }
+  }
+
+  if (typeof update.focused === 'boolean') {
+    clientState.focused = update.focused;
+  }
+
+  if (update.chatId !== undefined) {
+    clientState.chatId = update.chatId;
+  }
+
+  clientState.timestamp = update.timestamp || now;
+}
+
+function isClientStateFresh(now = Date.now()) {
+  return now - clientState.timestamp < CLIENT_STATE_TTL;
+}
+
+async function shouldSuppressNotification(data = {}) {
+  const now = Date.now();
+  const stateFresh = isClientStateFresh(now);
+
+  if (stateFresh && clientState.visible) {
+    return true;
+  }
+
+  const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+  return windowClients.some((client) => client.visibilityState === 'visible');
 }
 
 function resolveNotificationTag(data = {}) {
@@ -80,15 +133,41 @@ async function showNotificationOnce(notification) {
   const { title, body, tag, data } = notification;
   const now = Date.now();
   const dedupeKey = extractMessageId(data, `${tag}:${body}`);
+  const fallbackDedupeKey = tag ? `${tag}:${body}` : body;
+  const dedupeKeys = Array.from(new Set([dedupeKey, fallbackDedupeKey].filter(Boolean)));
 
-  pruneRecentNotifications(now);
-
-  if (dedupeKey && recentNotifications.has(dedupeKey)) {
+  if (await shouldSuppressNotification(data)) {
     return;
   }
 
-  if (dedupeKey) {
-    recentNotifications.set(dedupeKey, now);
+  pruneRecentNotifications(now);
+
+  if (dedupeKeys.some((key) => recentNotifications.has(key))) {
+    return;
+  }
+
+  if (tag) {
+    const lastShownForTag = recentTags.get(tag);
+    if (lastShownForTag && now - lastShownForTag < RECENT_TAG_TTL) {
+      return;
+    }
+  }
+
+  dedupeKeys.forEach((key) => {
+    recentNotifications.set(key, now);
+  });
+
+  if (tag) {
+    recentTags.set(tag, now);
+  }
+
+  if (tag && self.registration && self.registration.getNotifications) {
+    try {
+      const existing = await self.registration.getNotifications({ tag });
+      existing.forEach((item) => item.close());
+    } catch (error) {
+      console.warn('Не удалось получить существующие уведомления:', error);
+    }
   }
 
   const options = {
@@ -109,8 +188,11 @@ async function showNotificationOnce(notification) {
     await self.registration.showNotification(title, options);
   } catch (error) {
     console.error('Не удалось показать уведомление:', error);
-    if (dedupeKey) {
-      recentNotifications.delete(dedupeKey);
+    dedupeKeys.forEach((key) => {
+      recentNotifications.delete(key);
+    });
+    if (tag) {
+      recentTags.delete(tag);
     }
   }
 }
@@ -148,7 +230,16 @@ self.addEventListener('push', (event) => {
 });
 
 self.addEventListener('message', (event) => {
-  if (!event.data || event.data.type !== 'NEW_MESSAGE') {
+  if (!event.data) {
+    return;
+  }
+
+  if (event.data.type === 'CLIENT_STATE') {
+    updateClientState(event.data);
+    return;
+  }
+
+  if (event.data.type !== 'NEW_MESSAGE') {
     return;
   }
 
