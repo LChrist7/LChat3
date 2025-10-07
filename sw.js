@@ -1,4 +1,25 @@
-const CACHE_NAME = 'messenger-v2';
+importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js');
+
+const firebaseConfig = {
+  apiKey: "AIzaSyD-JW_GPcXYE6Mo87wKDAKKtRSwIGzLp5g",
+  authDomain: "lchat3-7ad86.firebaseapp.com",
+  projectId: "lchat3-7ad86",
+  storageBucket: "lchat3-7ad86.firebasestorage.app",
+  messagingSenderId: "956958925747",
+  appId: "1:956958925747:web:966a2906f540538251a1c6"
+};
+
+firebase.initializeApp(firebaseConfig);
+
+let messaging = null;
+try {
+  messaging = firebase.messaging();
+} catch (error) {
+  console.warn('Firebase Messaging недоступен в Service Worker:', error);
+}
+
+const CACHE_NAME = 'messenger-v3';
 
 // Установка Service Worker
 self.addEventListener('install', event => {
@@ -37,28 +58,11 @@ self.addEventListener('activate', event => {
 // Перехват запросов
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
-  
-  // Игнорируем запросы к внешним ресурсам
-  if (
-    url.origin.includes('firebase') ||
-    url.origin.includes('google') ||
-    url.origin.includes('gstatic') ||
-    url.origin.includes('googleapis') ||
-    url.origin.includes('cloudflare') ||
-    url.origin.includes('unpkg') ||
-    url.origin.includes('cdnjs') ||
-    url.pathname.includes('favicon.ico') ||
-    url.pathname.includes('manifest.json') ||
-    url.protocol === 'chrome-extension:'
-  ) {
-    // Пропускаем эти запросы без кэширования
-    event.respondWith(fetch(event.request).catch(() => {
-      return new Response('', { status: 404 });
-    }));
+
+  if (url.origin !== self.location.origin || event.request.method !== 'GET') {
     return;
   }
-  
-  // Для HTML страниц - network first
+
   if (event.request.destination === 'document') {
     event.respondWith(
       fetch(event.request)
@@ -99,6 +103,25 @@ self.addEventListener('fetch', event => {
       .catch(() => new Response('Offline', { status: 503 }))
   );
 });
+
+if (messaging) {
+  messaging.onBackgroundMessage((payload) => {
+    console.log('Фоновое сообщение получено:', payload);
+
+    const notificationTitle = payload.notification?.title || payload.data?.title || 'Новое сообщение';
+    const notificationOptions = {
+      body: payload.notification?.body || payload.data?.body || 'У вас новое сообщение',
+      icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
+      badge: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
+      tag: payload.data?.tag || 'message-notification',
+      data: payload.data || {},
+      requireInteraction: false,
+      vibrate: [200, 100, 200]
+    };
+
+    return self.registration.showNotification(notificationTitle, notificationOptions);
+  });
+}
 
 // Прием сообщений для локальных уведомлений
 self.addEventListener('message', event => {
