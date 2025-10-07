@@ -94,7 +94,7 @@
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, getDocs, limit, deleteDoc, updateDoc, arrayUnion } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, getDocs, limit, deleteDoc, updateDoc, arrayUnion, increment } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
         import { getMessaging, getToken, onMessage } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js';
         import { getStorage, ref, uploadBytes, getDownloadURL } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js';
         
@@ -118,40 +118,46 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
         } catch (error) {
             console.warn('Firebase Messaging не поддерживается:', error);
         }
-        
-        window.firebaseApp = app;
-        window.firebaseAuth = auth;
-        window.firebaseDb = db;
-        window.firebaseStorage = storage;
-        window.firebaseMessaging = messaging;
-		window.firebaseFunctions = {
-			createUserWithEmailAndPassword,
-			signInWithEmailAndPassword,
-			signOut,
-			onAuthStateChanged,
-			doc,
-			setDoc,
-			getDoc,
-			collection,
-			query,
-			where,
-			orderBy,
-			onSnapshot,
-			addDoc,
-			serverTimestamp,
-			getDocs,
-			limit,
-			deleteDoc,
-			updateDoc,
-			arrayUnion,
-			getToken,
-			onMessage,
-			ref,
-			uploadBytes,
-			getDownloadURL
-		};
-        window.firebaseReady = true;
-        
+
+        const firebaseServices = {
+            app,
+            auth,
+            db,
+            storage,
+            messaging,
+            functions: {
+                createUserWithEmailAndPassword,
+                signInWithEmailAndPassword,
+                signOut,
+                onAuthStateChanged,
+                doc,
+                setDoc,
+                getDoc,
+                collection,
+                query,
+                where,
+                orderBy,
+                onSnapshot,
+                addDoc,
+                serverTimestamp,
+                getDocs,
+                limit,
+                deleteDoc,
+                updateDoc,
+                arrayUnion,
+                increment,
+                getToken,
+                onMessage,
+                ref,
+                uploadBytes,
+                getDownloadURL
+            }
+        };
+
+        setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('firebase-ready', { detail: firebaseServices }));
+        }, 0);
+
         console.log('✅ Firebase инициализирован (с поддержкой звонков)');
     </script>
 </head>
@@ -161,11 +167,30 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
+        const firebaseServicesPromise = new Promise((resolve, reject) => {
+            const handleReady = (event) => {
+                window.removeEventListener('firebase-ready', handleReady);
+                window.removeEventListener('firebase-error', handleError);
+                resolve(event.detail);
+            };
+
+            const handleError = (event) => {
+                window.removeEventListener('firebase-ready', handleReady);
+                window.removeEventListener('firebase-error', handleError);
+                reject(event.detail || new Error('Firebase initialization failed'));
+            };
+
+            window.addEventListener('firebase-ready', handleReady, { once: true });
+            window.addEventListener('firebase-error', handleError, { once: true });
+        });
+
         function loginToEmail(login) {
             return `${login.toLowerCase()}@messenger.local`;
         }
 
-        function App() {
+            function App() {
+            const [firebaseServices, setFirebaseServices] = useState(null);
+            const [firebaseInitError, setFirebaseInitError] = useState(null);
             const [isLogin, setIsLogin] = useState(true);
             const [login, setLogin] = useState('');
             const [password, setPassword] = useState('');
@@ -199,6 +224,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const [activeCall, setActiveCall] = useState(null);
             const [callState, setCallState] = useState(null);
             const [isMuted, setIsMuted] = useState(false);
+            const [isSpeakerEnabled, setIsSpeakerEnabled] = useState(false);
             const [callDuration, setCallDuration] = useState(0);
             
             const messageInputRef = useRef(null);
@@ -214,11 +240,39 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const remoteAudioRef = useRef(null);
             const callTimerRef = useRef(null);
             const ringtoneRef = useRef(null);
+            const callSubscriptionsRef = useRef([]);
 
             const isIOS = () => {
-                return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+                return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
                        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
             };
+
+            useEffect(() => {
+                let isMounted = true;
+
+                firebaseServicesPromise
+                    .then((services) => {
+                        if (isMounted) {
+                            setFirebaseServices(services);
+                        }
+                    })
+                    .catch((error) => {
+                        console.error('Ошибка инициализации Firebase:', error);
+                        if (isMounted) {
+                            setFirebaseInitError(error);
+                        }
+                    });
+
+                return () => {
+                    isMounted = false;
+                };
+            }, []);
+
+            const firebaseFunctions = firebaseServices?.functions;
+            const firebaseAuth = firebaseServices?.auth;
+            const firebaseDb = firebaseServices?.db;
+            const firebaseStorage = firebaseServices?.storage;
+            const firebaseMessaging = firebaseServices?.messaging;
 
             const scrollToBottom = () => {
                 messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -277,6 +331,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             const initiateCall = async (recipientId, recipientLogin) => {
+                if (!firebaseFunctions || !firebaseDb) return;
                 try {
                     console.log('📞 Инициируем звонок к:', recipientLogin);
                     
@@ -307,8 +362,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         peerConnection.addTrack(track, stream);
                     });
                     
-                    const { collection, addDoc, serverTimestamp } = window.firebaseFunctions;
-                    const callsRef = collection(window.firebaseDb, 'calls');
+                    const { collection, addDoc, serverTimestamp } = firebaseFunctions;
+                    const callsRef = collection(firebaseDb, 'calls');
                     const callDoc = await addDoc(callsRef, {
                         callerId: user.uid,
                         callerLogin: user.login,
@@ -329,8 +384,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     setCallState('calling');
                     playRingtone();
                     
-                    const { doc, onSnapshot } = window.firebaseFunctions;
-                    const callRef = doc(window.firebaseDb, 'calls', callDoc.id);
+                    const { doc, onSnapshot } = firebaseFunctions;
+                    const callRef = doc(firebaseDb, 'calls', callDoc.id);
                     
 					let answerProcessed = false;
 					
@@ -360,7 +415,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     const offer = await peerConnection.createOffer();
                     await peerConnection.setLocalDescription(offer);
                     
-                    const { setDoc } = window.firebaseFunctions;
+                    const { setDoc } = firebaseFunctions;
                     await setDoc(callRef, {
                         offer: {
                             type: offer.type,
@@ -371,7 +426,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 					peerConnection.onicecandidate = async (event) => {
 						if (event.candidate) {
 							try {
-								const { updateDoc, arrayUnion } = window.firebaseFunctions;
+								const { updateDoc, arrayUnion } = firebaseFunctions;
 								if (!arrayUnion) {
 									console.error('❌ arrayUnion не доступен');
 									return;
@@ -437,7 +492,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						}
 					});
 					
-					window.activeCallUnsubscribers = [callStatusUnsubscribe, candidatesUnsubscribe];
+                                        callSubscriptionsRef.current = [callStatusUnsubscribe, candidatesUnsubscribe];
                     
                     setTimeout(() => {
                         if (callState === 'calling') {
@@ -454,10 +509,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             useEffect(() => {
-                if (!user) return;
-                
-                const { collection, query, where, onSnapshot } = window.firebaseFunctions;
-                const callsRef = collection(window.firebaseDb, 'calls');
+                if (!user || !firebaseFunctions || !firebaseDb) return;
+
+                const { collection, query, where, onSnapshot } = firebaseFunctions;
+                const callsRef = collection(firebaseDb, 'calls');
                 const q = query(
                     callsRef,
                     where('recipientId', '==', user.uid),
@@ -480,9 +535,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 });
                 
                 return () => unsubscribe();
-            }, [user]);
+            }, [user, firebaseFunctions, firebaseDb]);
 
             const acceptCall = async () => {
+                if (!firebaseFunctions || !firebaseDb) return;
                 try {
                     if (!incomingCall) return;
                     
@@ -536,8 +592,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						}
 					};
                     
-                    const { doc, getDoc, setDoc, updateDoc } = window.firebaseFunctions;
-                    const callRef = doc(window.firebaseDb, 'calls', incomingCall.id);
+                    const { doc, getDoc, setDoc, updateDoc } = firebaseFunctions;
+                    const callRef = doc(firebaseDb, 'calls', incomingCall.id);
                     const callSnap = await getDoc(callRef);
                     const callData = callSnap.data();
                     
@@ -558,7 +614,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						peerConnection.onicecandidate = async (event) => {
 							if (event.candidate) {
 								try {
-									const { updateDoc, arrayUnion } = window.firebaseFunctions;
+									const { updateDoc, arrayUnion } = firebaseFunctions;
 									if (!arrayUnion) {
 										console.error('❌ arrayUnion не доступен');
 										return;
@@ -573,7 +629,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						};
                         
 						const processedCandidates = new Set();
-						const { onSnapshot } = window.firebaseFunctions;
+						const { onSnapshot } = firebaseFunctions;
 						const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
 							const data = snapshot.data();
 							
@@ -600,7 +656,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 							}
 						});
 						
-						window.activeCallUnsubscribers = [candidatesUnsubscribe];
+                                                callSubscriptionsRef.current = [candidatesUnsubscribe];
 						
                         setActiveCall({
                             id: incomingCall.id,
@@ -622,14 +678,15 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             const rejectCall = async () => {
+                if (!firebaseFunctions || !firebaseDb) return;
                 try {
                     if (!incomingCall) return;
                     
                     console.log('❌ Отклоняем звонок');
                     stopRingtone();
                     
-                    const { doc, updateDoc } = window.firebaseFunctions;
-                    const callRef = doc(window.firebaseDb, 'calls', incomingCall.id);
+                    const { doc, updateDoc } = firebaseFunctions;
+                    const callRef = doc(firebaseDb, 'calls', incomingCall.id);
                     await updateDoc(callRef, {
                         status: 'rejected'
                     });
@@ -641,28 +698,39 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 			
             const endCall = async () => {
+                if (!firebaseFunctions || !firebaseDb) return;
                 try {
                     console.log('📞 Завершаем звонок');
-                    
+
                     stopRingtone();
-					
-					if (window.activeCallUnsubscribers && window.activeCallUnsubscribers.length > 0) {
-						console.log('🔌 Отписываемся от', window.activeCallUnsubscribers.length, 'подписок');
-						window.activeCallUnsubscribers.forEach(unsub => {
-							try {
-								unsub();
-							} catch (e) {
-								console.log('Ошибка отписки:', e);
-							}
-						});
-						window.activeCallUnsubscribers = [];
-					}
+
+                    if (callSubscriptionsRef.current.length > 0) {
+                        console.log('🔌 Отписываемся от', callSubscriptionsRef.current.length, 'подписок');
+                        callSubscriptionsRef.current.forEach(unsub => {
+                            try {
+                                unsub();
+                            } catch (e) {
+                                console.log('Ошибка отписки:', e);
+                            }
+                        });
+                        callSubscriptionsRef.current = [];
+                    }
             
                     if (callTimerRef.current) {
                         clearInterval(callTimerRef.current);
                         callTimerRef.current = null;
                     }
-                    
+
+                    if (remoteAudioRef.current && typeof remoteAudioRef.current.setSinkId === 'function') {
+                        try {
+                            await remoteAudioRef.current.setSinkId('default');
+                        } catch (error) {
+                            console.warn('Не удалось сбросить аудиовыход:', error);
+                        }
+                    }
+
+                    setIsSpeakerEnabled(false);
+
                     if (peerConnectionRef.current) {
                         peerConnectionRef.current.close();
                         peerConnectionRef.current = null;
@@ -674,11 +742,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     }
                     
                     if (activeCall) {
-                        const { doc, updateDoc } = window.firebaseFunctions;
-                        const callRef = doc(window.firebaseDb, 'calls', activeCall.id);
+                        const { doc, updateDoc } = firebaseFunctions;
+                        const callRef = doc(firebaseDb, 'calls', activeCall.id);
+                        const { serverTimestamp } = firebaseFunctions;
                         await updateDoc(callRef, {
                             status: 'ended',
-                            endedAt: window.firebaseFunctions.serverTimestamp()
+                            endedAt: serverTimestamp()
                         });
                     }
                     
@@ -686,6 +755,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     setCallState(null);
                     setCallDuration(0);
                     setIsMuted(false);
+                    setIsSpeakerEnabled(false);
                     
                 } catch (error) {
                     console.error('Ошибка завершения звонка:', error);
@@ -702,6 +772,53 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             };
 
+            const toggleSpeaker = async () => {
+                const audioElement = remoteAudioRef.current;
+                if (!audioElement) return;
+
+                if (typeof audioElement.setSinkId !== 'function') {
+                    alert('Переключение громкой связи не поддерживается на этом устройстве');
+                    return;
+                }
+
+                try {
+                    if (isSpeakerEnabled) {
+                        await audioElement.setSinkId('default');
+                        setIsSpeakerEnabled(false);
+                        return;
+                    }
+
+                    let applied = false;
+
+                    if (navigator.mediaDevices?.enumerateDevices) {
+                        const devices = await navigator.mediaDevices.enumerateDevices();
+                        const speakerDevice = devices.find(device => device.kind === 'audiooutput' && /speaker|динамик|speakerphone/i.test(device.label));
+                        if (speakerDevice) {
+                            await audioElement.setSinkId(speakerDevice.deviceId);
+                            applied = true;
+                        }
+                    }
+
+                    if (!applied) {
+                        try {
+                            await audioElement.setSinkId('communications');
+                            applied = true;
+                        } catch (error) {
+                            await audioElement.setSinkId('default');
+                        }
+                    }
+
+                    if (applied) {
+                        setIsSpeakerEnabled(true);
+                    } else {
+                        alert('Не удалось переключить громкую связь на этом устройстве');
+                    }
+                } catch (error) {
+                    console.error('Ошибка переключения громкой связи:', error);
+                    alert('Не удалось переключить громкую связь на этом устройстве');
+                }
+            };
+
             const startCallTimer = () => {
                 callTimerRef.current = setInterval(() => {
                     setCallDuration(prev => prev + 1);
@@ -714,37 +831,29 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 return `${mins}:${secs.toString().padStart(2, '0')}`;
             };
 
-			useEffect(() => {
-				if ('serviceWorker' in navigator) {
-					navigator.serviceWorker.register('/sw.js')
-						.then(registration => {
-							console.log('✅ Cache SW зарегистрирован');
-						})
-						.catch(error => {
-							console.error('❌ Ошибка регистрации Cache SW:', error);
-						});
-					
-					navigator.serviceWorker.register('/firebase-messaging-sw.js')
-						.then(registration => {
-							console.log('✅ Firebase Messaging SW зарегистрирован');
-						})
-						.catch(error => {
-							console.warn('⚠️ Firebase Messaging SW недоступен (это нормально для некоторых хостингов):', error.message);
-						});
-				}
+                        useEffect(() => {
+                                if ('serviceWorker' in navigator) {
+                                        navigator.serviceWorker.register('/sw.js')
+                                                .then(() => {
+                                                        console.log('✅ Service Worker зарегистрирован');
+                                                })
+                                                .catch(error => {
+                                                        console.error('❌ Ошибка регистрации Service Worker:', error);
+                                                });
+                                }
 
-				if ('Notification' in window) {
-					setNotificationsEnabled(Notification.permission === 'granted');
-				}
-			}, []);
+                                if ('Notification' in window) {
+                                        setNotificationsEnabled(Notification.permission === 'granted');
+                                }
+                        }, []);
 
             const setupFCMToken = async (userId) => {
-                if (!window.firebaseMessaging) return;
+                if (!firebaseMessaging || !firebaseFunctions || !firebaseDb) return;
 
                 try {
                     await navigator.serviceWorker.ready;
-                    const { getToken } = window.firebaseFunctions;
-                    const messaging = window.firebaseMessaging;
+                    const { getToken } = firebaseFunctions;
+                    const messaging = firebaseMessaging;
                     const vapidKey = 'BFT8KODjBs3Su-Hj0OZ06Dp-RWTRW7CpfNSwZe-Q-HmFK29Zm1iJ_4pxS-7YuTAIJ9YMoJs3c5zzrd_4NeIiu_s';
 
                     const token = await getToken(messaging, { 
@@ -754,10 +863,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     
                     if (token) {
                         setFcmToken(token);
-                        const { doc, setDoc, serverTimestamp } = window.firebaseFunctions;
+                        const { doc, setDoc, serverTimestamp } = firebaseFunctions;
                         const deviceId = getDeviceId();
                         
-                        await setDoc(doc(window.firebaseDb, 'users', userId, 'tokens', deviceId), {
+                        await setDoc(doc(firebaseDb, 'users', userId, 'tokens', deviceId), {
                             token: token,
                             deviceId: deviceId,
                             createdAt: serverTimestamp(),
@@ -771,11 +880,11 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             const removeFCMToken = async (userId) => {
-                if (!fcmToken || !userId) return;
+                if (!fcmToken || !userId || !firebaseFunctions || !firebaseDb) return;
                 try {
-                    const { doc, deleteDoc } = window.firebaseFunctions;
+                    const { doc, deleteDoc } = firebaseFunctions;
                     const deviceId = getDeviceId();
-                    await deleteDoc(doc(window.firebaseDb, 'users', userId, 'tokens', deviceId));
+                    await deleteDoc(doc(firebaseDb, 'users', userId, 'tokens', deviceId));
                     setFcmToken(null);
                 } catch (error) {
                     console.error('Ошибка удаления токена:', error);
@@ -789,7 +898,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     }, 1000);
                     return () => clearTimeout(timer);
                 }
-            }, [user, notificationsEnabled, fcmToken]);
+            }, [user, notificationsEnabled, fcmToken, firebaseMessaging, firebaseFunctions, firebaseDb]);
 
             const requestNotificationPermission = async () => {
                 if (!('Notification' in window)) {
@@ -892,18 +1001,18 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             const sendVoiceMessage = async () => {
-                if (!audioBlob || !selectedChat) return;
+                if (!audioBlob || !selectedChat || !firebaseFunctions || !firebaseStorage || !firebaseDb) return;
                 setUploadingAudio(true);
 
                 try {
-                    const { ref, uploadBytes, getDownloadURL } = window.firebaseFunctions;
+                    const { ref, uploadBytes, getDownloadURL, increment } = firebaseFunctions;
                     const fileName = `voice_${user.uid}_${Date.now()}.webm`;
-                    const storageRef = ref(window.firebaseStorage, `voice-messages/${selectedChat.id}/${fileName}`);
+                    const storageRef = ref(firebaseStorage, `voice-messages/${selectedChat.id}/${fileName}`);
                     await uploadBytes(storageRef, audioBlob);
                     const audioUrl = await getDownloadURL(storageRef);
-                    
-                    const { collection, addDoc, serverTimestamp, doc, setDoc } = window.firebaseFunctions;
-                    const messagesRef = collection(window.firebaseDb, 'chats', selectedChat.id, 'messages');
+
+                    const { collection, addDoc, serverTimestamp, doc, setDoc } = firebaseFunctions;
+                    const messagesRef = collection(firebaseDb, 'chats', selectedChat.id, 'messages');
                     
                     await addDoc(messagesRef, {
                         type: 'audio',
@@ -913,13 +1022,13 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         timestamp: serverTimestamp()
                     });
                     
-                    const chatRef = doc(window.firebaseDb, 'chats', selectedChat.id);
+                    const chatRef = doc(firebaseDb, 'chats', selectedChat.id);
                     const otherUserId = selectedChat.participants.find(id => id !== user.uid);
-                    
+
                     await setDoc(chatRef, {
                         lastMessage: '🎤 Голосовое сообщение',
                         lastMessageTime: serverTimestamp(),
-                        [`unreadCount.${otherUserId}`]: (selectedChat.unreadCount?.[otherUserId] || 0) + 1
+                        [`unreadCount.${otherUserId}`]: increment(1)
                     }, { merge: true });
                     
                     setAudioBlob(null);
@@ -1032,48 +1141,47 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             useEffect(() => {
-                const checkFirebase = () => {
-                    if (window.firebaseReady) {
-                        const { onAuthStateChanged, doc, getDoc } = window.firebaseFunctions;
-                        
-                        const unsubscribe = onAuthStateChanged(window.firebaseAuth, async (firebaseUser) => {
-                            if (firebaseUser) {
-                                try {
-                                    const userDoc = await getDoc(doc(window.firebaseDb, 'users', firebaseUser.uid));
-                                    if (userDoc.exists()) {
-                                        setUser({
-                                            uid: firebaseUser.uid,
-                                            login: userDoc.data().login
-                                        });
-                                    }
-                                } catch (error) {
-                                    console.error('Ошибка загрузки данных:', error);
-                                }
-                            } else {
-                                setUser(null);
+                if (!firebaseFunctions || !firebaseAuth || !firebaseDb) {
+                    return;
+                }
+
+                const { onAuthStateChanged, doc, getDoc, setDoc, serverTimestamp } = firebaseFunctions;
+
+                const unsubscribe = onAuthStateChanged(firebaseAuth, async (firebaseUser) => {
+                    if (firebaseUser) {
+                        try {
+                            const userRef = doc(firebaseDb, 'users', firebaseUser.uid);
+                            const userDoc = await getDoc(userRef);
+
+                            if (!userDoc.exists()) {
+                                await setDoc(userRef, {
+                                    login: firebaseUser.email?.split('@')[0] || 'user',
+                                    createdAt: serverTimestamp()
+                                }, { merge: true });
                             }
-                            setInitializing(false);
-                        });
-                        
-                        return unsubscribe;
+
+                            const refreshedDoc = await getDoc(userRef);
+                            setUser({
+                                uid: firebaseUser.uid,
+                                login: refreshedDoc.data().login
+                            });
+                        } catch (error) {
+                            console.error('Ошибка загрузки данных:', error);
+                        }
                     } else {
-                        setTimeout(checkFirebase, 100);
+                        setUser(null);
                     }
-                };
-                
-                const unsubscribe = checkFirebase();
-                return () => {
-                    if (typeof unsubscribe === 'function') {
-                        unsubscribe();
-                    }
-                };
-            }, []);
+                    setInitializing(false);
+                });
+
+                return () => unsubscribe();
+            }, [firebaseFunctions, firebaseAuth, firebaseDb]);
 
             useEffect(() => {
-                if (!user) return;
+                if (!user || !firebaseFunctions || !firebaseDb) return;
 
-                const { collection, query, where, onSnapshot, orderBy } = window.firebaseFunctions;
-                const chatsRef = collection(window.firebaseDb, 'chats');
+                const { collection, query, where, onSnapshot, orderBy } = firebaseFunctions;
+                const chatsRef = collection(firebaseDb, 'chats');
                 const q = query(
                     chatsRef,
                     where('participants', 'array-contains', user.uid),
@@ -1089,18 +1197,18 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 });
 
                 return () => unsubscribe();
-            }, [user]);
+            }, [user, firebaseFunctions, firebaseDb]);
 
             useEffect(() => {
-                if (!user || chats.length === 0) return;
+                if (!user || chats.length === 0 || !firebaseFunctions || !firebaseDb) return;
 
-                const { doc, onSnapshot } = window.firebaseFunctions;
+                const { doc, onSnapshot } = firebaseFunctions;
                 const unsubscribes = [];
 
                 chats.forEach(chat => {
                     const otherUserId = chat.participants.find(id => id !== user.uid);
                     if (otherUserId) {
-                        const userRef = doc(window.firebaseDb, 'users', otherUserId);
+                        const userRef = doc(firebaseDb, 'users', otherUserId);
                         const unsubscribe = onSnapshot(userRef, (snapshot) => {
                             if (snapshot.exists()) {
                                 const userData = snapshot.data();
@@ -1118,50 +1226,76 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 });
 
                 return () => unsubscribes.forEach(unsub => unsub());
-            }, [user, chats]);
+            }, [user, chats, firebaseFunctions, firebaseDb]);
 
             useEffect(() => {
-                if (!user) return;
+                if (!user || !firebaseFunctions || !firebaseDb) return;
 
-                const { doc, setDoc, serverTimestamp } = window.firebaseFunctions;
-                const userRef = doc(window.firebaseDb, 'users', user.uid);
+                const { doc, setDoc, serverTimestamp } = firebaseFunctions;
+                const userRef = doc(firebaseDb, 'users', user.uid);
 
-                setDoc(userRef, {
-                    online: true,
-                    lastSeen: serverTimestamp()
-                }, { merge: true });
+                let visibilityTimeout = null;
+
+                const updatePresence = async (online) => {
+                    try {
+                        await setDoc(userRef, {
+                            online,
+                            lastSeen: serverTimestamp()
+                        }, { merge: true });
+                    } catch (error) {
+                        console.error('Ошибка обновления статуса онлайн:', error);
+                    }
+                };
+
+                updatePresence(true);
 
                 const interval = setInterval(() => {
-                    setDoc(userRef, {
-                        online: true,
-                        lastSeen: serverTimestamp()
-                    }, { merge: true });
+                    updatePresence(true);
                 }, 30000);
 
+                const handleVisibilityChange = () => {
+                    if (document.visibilityState === 'visible') {
+                        if (visibilityTimeout) {
+                            clearTimeout(visibilityTimeout);
+                            visibilityTimeout = null;
+                        }
+                        updatePresence(true);
+                    } else {
+                        visibilityTimeout = setTimeout(() => {
+                            updatePresence(false);
+                        }, 10000);
+                    }
+                };
+
                 const handleBeforeUnload = () => {
-                    setDoc(userRef, {
-                        online: false,
-                        lastSeen: serverTimestamp()
-                    }, { merge: true });
+                    updatePresence(false);
+                };
+
+                const handlePageHide = () => {
+                    updatePresence(false);
                 };
 
                 window.addEventListener('beforeunload', handleBeforeUnload);
+                window.addEventListener('pagehide', handlePageHide);
+                document.addEventListener('visibilitychange', handleVisibilityChange);
 
                 return () => {
                     clearInterval(interval);
+                    if (visibilityTimeout) {
+                        clearTimeout(visibilityTimeout);
+                    }
                     window.removeEventListener('beforeunload', handleBeforeUnload);
-                    setDoc(userRef, {
-                        online: false,
-                        lastSeen: serverTimestamp()
-                    }, { merge: true });
+                    window.removeEventListener('pagehide', handlePageHide);
+                    document.removeEventListener('visibilitychange', handleVisibilityChange);
+                    updatePresence(false);
                 };
-            }, [user]);
+            }, [user, firebaseFunctions, firebaseDb]);
 
             useEffect(() => {
-                if (!selectedChat) return;
+                if (!selectedChat || !firebaseFunctions || !firebaseDb) return;
 
-                const { collection, query, orderBy, onSnapshot } = window.firebaseFunctions;
-                const messagesRef = collection(window.firebaseDb, 'chats', selectedChat.id, 'messages');
+                const { collection, query, orderBy, onSnapshot } = firebaseFunctions;
+                const messagesRef = collection(firebaseDb, 'chats', selectedChat.id, 'messages');
                 const q = query(messagesRef, orderBy('timestamp', 'asc'));
 
                 let isFirstLoad = true;
@@ -1184,14 +1318,19 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                             type: 'NEW_MESSAGE',
                                             sender: senderLogin,
                                             text: notifText,
-                                            chatId: selectedChat.id
+                                            chatId: selectedChat.id,
+                                            messageId: change.doc.id
                                         });
                                     } else {
                                         if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
                                             new Notification(senderLogin, {
                                                 body: notifText,
                                                 icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
-                                                tag: 'message-' + selectedChat.id
+                                                tag: 'chat-' + (selectedChat.id || 'default'),
+                                                data: {
+                                                    chatId: selectedChat.id,
+                                                    messageId: change.doc.id
+                                                }
                                             });
                                         }
                                     }
@@ -1206,13 +1345,13 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 });
 
                 return () => unsubscribe();
-            }, [selectedChat, notificationsEnabled, user]);
+            }, [selectedChat, notificationsEnabled, user, firebaseFunctions, firebaseDb]);
 
             useEffect(() => {
-                if (!selectedChat) return;
+                if (!selectedChat || !firebaseFunctions || !firebaseDb) return;
 
-                const { doc, onSnapshot } = window.firebaseFunctions;
-                const typingRef = doc(window.firebaseDb, 'chats', selectedChat.id, 'typing', 'status');
+                const { doc, onSnapshot } = firebaseFunctions;
+                const typingRef = doc(firebaseDb, 'chats', selectedChat.id, 'typing', 'status');
 
                 const unsubscribe = onSnapshot(typingRef, (snapshot) => {
                     if (snapshot.exists()) {
@@ -1223,12 +1362,13 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 });
 
                 return () => unsubscribe();
-            }, [selectedChat]);
+            }, [selectedChat, firebaseFunctions, firebaseDb]);
 
             const markMessagesAsRead = async (chatId) => {
+                if (!firebaseFunctions || !firebaseDb) return;
                 try {
-                    const { doc, setDoc, serverTimestamp } = window.firebaseFunctions;
-                    const chatRef = doc(window.firebaseDb, 'chats', chatId);
+                    const { doc, setDoc, serverTimestamp } = firebaseFunctions;
+                    const chatRef = doc(firebaseDb, 'chats', chatId);
                     await setDoc(chatRef, {
                         [`unreadCount.${user.uid}`]: 0,
                         [`lastRead.${user.uid}`]: serverTimestamp()
@@ -1240,11 +1380,11 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
             let typingTimeout = null;
             const handleTyping = async () => {
-                if (!selectedChat) return;
+                if (!selectedChat || !firebaseFunctions || !firebaseDb) return;
 
                 try {
-                    const { doc, setDoc, serverTimestamp } = window.firebaseFunctions;
-                    const typingRef = doc(window.firebaseDb, 'chats', selectedChat.id, 'typing', 'status');
+                    const { doc, setDoc, serverTimestamp } = firebaseFunctions;
+                    const typingRef = doc(firebaseDb, 'chats', selectedChat.id, 'typing', 'status');
                     
                     await setDoc(typingRef, {
                         [user.uid]: serverTimestamp()
@@ -1262,6 +1402,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             useEffect(() => {
+                if (!firebaseFunctions || !firebaseDb) return;
+
                 if (!searchUser || searchUser.length < 2) {
                     setSearchResults([]);
                     return;
@@ -1269,8 +1411,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
                 const searchUsers = async () => {
                     try {
-                        const { collection, query, where, getDocs, orderBy, limit } = window.firebaseFunctions;
-                        const usersRef = collection(window.firebaseDb, 'users');
+                        const { collection, query, where, getDocs, orderBy, limit } = firebaseFunctions;
+                        const usersRef = collection(firebaseDb, 'users');
                         
                         const q = query(
                             usersRef,
@@ -1293,17 +1435,18 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
                 const timeoutId = setTimeout(searchUsers, 300);
                 return () => clearTimeout(timeoutId);
-            }, [searchUser, user]);
+            }, [searchUser, user, firebaseFunctions, firebaseDb]);
 
             const createChat = async (recipientLogin, recipientId = null) => {
+                if (!firebaseFunctions || !firebaseDb) return;
                 try {
-                    const { collection, query, where, getDocs, addDoc, doc, serverTimestamp } = window.firebaseFunctions;
+                    const { collection, query, where, getDocs, addDoc, doc, serverTimestamp } = firebaseFunctions;
                     
                     let actualRecipientId = recipientId;
                     let actualRecipientLogin = recipientLogin;
                     
                     if (!actualRecipientId) {
-                        const usersRef = collection(window.firebaseDb, 'users');
+                        const usersRef = collection(firebaseDb, 'users');
                         const q = query(usersRef, where('login', '==', recipientLogin));
                         const querySnapshot = await getDocs(q);
                         
@@ -1322,7 +1465,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         return;
                     }
                     
-                    const chatsRef = collection(window.firebaseDb, 'chats');
+                    const chatsRef = collection(firebaseDb, 'chats');
                     const existingChatsQuery = query(
                         chatsRef,
                         where('participants', 'array-contains', user.uid)
@@ -1367,15 +1510,15 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             const sendMessage = async () => {
-                if (!newMessage.trim() || !selectedChat) return;
+                if (!newMessage.trim() || !selectedChat || !firebaseFunctions || !firebaseDb) return;
 
                 const messageText = newMessage;
                 setNewMessage('');
 
                 try {
-                    const { collection, addDoc, serverTimestamp, doc, setDoc } = window.firebaseFunctions;
-                    
-                    const messagesRef = collection(window.firebaseDb, 'chats', selectedChat.id, 'messages');
+                    const { collection, addDoc, serverTimestamp, doc, setDoc, increment } = firebaseFunctions;
+
+                    const messagesRef = collection(firebaseDb, 'chats', selectedChat.id, 'messages');
                     await addDoc(messagesRef, {
                         type: 'text',
                         text: messageText,
@@ -1383,16 +1526,16 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         timestamp: serverTimestamp()
                     });
                     
-                    const chatRef = doc(window.firebaseDb, 'chats', selectedChat.id);
+                    const chatRef = doc(firebaseDb, 'chats', selectedChat.id);
                     const otherUserId = selectedChat.participants.find(id => id !== user.uid);
-                    
+
                     await setDoc(chatRef, {
                         lastMessage: messageText,
                         lastMessageTime: serverTimestamp(),
-                        [`unreadCount.${otherUserId}`]: (selectedChat.unreadCount?.[otherUserId] || 0) + 1
+                        [`unreadCount.${otherUserId}`]: increment(1)
                     }, { merge: true });
                     
-                    const typingRef = doc(window.firebaseDb, 'chats', selectedChat.id, 'typing', 'status');
+                    const typingRef = doc(firebaseDb, 'chats', selectedChat.id, 'typing', 'status');
                     await setDoc(typingRef, {
                         [user.uid]: null
                     }, { merge: true });
@@ -1419,7 +1562,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 setLoading(true);
 
                 try {
-                    if (!window.firebaseReady) {
+                    if (!firebaseFunctions || !firebaseAuth || !firebaseDb) {
                         throw new Error('Firebase еще не готов');
                     }
 
@@ -1436,24 +1579,34 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     }
 
                     const email = loginToEmail(login);
-                    const { createUserWithEmailAndPassword, signInWithEmailAndPassword, doc, setDoc, getDoc } = window.firebaseFunctions;
+                    const { createUserWithEmailAndPassword, signInWithEmailAndPassword, doc, setDoc, getDoc, serverTimestamp } = firebaseFunctions;
 
                     if (isLogin) {
-                        const userCredential = await signInWithEmailAndPassword(window.firebaseAuth, email, password);
-                        const userDoc = await getDoc(doc(window.firebaseDb, 'users', userCredential.user.uid));
-                        
+                        const userCredential = await signInWithEmailAndPassword(firebaseAuth, email, password);
+                        const userRef = doc(firebaseDb, 'users', userCredential.user.uid);
+                        const userDoc = await getDoc(userRef);
+
+                        if (!userDoc.exists()) {
+                            await setDoc(userRef, {
+                                login: login,
+                                createdAt: serverTimestamp()
+                            }, { merge: true });
+                        }
+
+                        const finalDoc = await getDoc(userRef);
+
                         setUser({
                             uid: userCredential.user.uid,
-                            login: userDoc.data().login
+                            login: finalDoc.data().login
                         });
                     } else {
-                        const userCredential = await createUserWithEmailAndPassword(window.firebaseAuth, email, password);
-                        
-                        await setDoc(doc(window.firebaseDb, 'users', userCredential.user.uid), {
+                        const userCredential = await createUserWithEmailAndPassword(firebaseAuth, email, password);
+
+                        await setDoc(doc(firebaseDb, 'users', userCredential.user.uid), {
                             login: login,
-                            createdAt: new Date().toISOString()
+                            createdAt: serverTimestamp()
                         });
-                        
+
                         setUser({
                             uid: userCredential.user.uid,
                             login: login
@@ -1482,13 +1635,14 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             const handleLogout = async () => {
+                if (!firebaseFunctions || !firebaseAuth) return;
                 try {
                     if (user) {
                         await removeFCMToken(user.uid);
                     }
-                    
-                    const { signOut } = window.firebaseFunctions;
-                    await signOut(window.firebaseAuth);
+
+                    const { signOut } = firebaseFunctions;
+                    await signOut(firebaseAuth);
                     setUser(null);
                     setLogin('');
                     setPassword('');
@@ -1506,6 +1660,37 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     handleAuth();
                 }
             };
+
+            if (firebaseInitError) {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-red-50 to-rose-100 flex items-center justify-center p-4">
+                        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md text-center">
+                            <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <svg className="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86a2 2 0 001.73-3l-6.93-12a2 2 0 00-3.46 0l-6.93 12a2 2 0 001.73 3z" />
+                                </svg>
+                            </div>
+                            <h2 className="text-lg font-semibold text-gray-800 mb-2">Не удалось подключиться к Firebase</h2>
+                            <p className="text-sm text-gray-600">{firebaseInitError.message || 'Повторите попытку позже.'}</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (!firebaseServices) {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+                        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md text-center">
+                            <div className="w-16 h-16 bg-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4 animate-pulse">
+                                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                </svg>
+                            </div>
+                            <p className="text-gray-600 mb-4">Подключение к Firebase...</p>
+                        </div>
+                    </div>
+                );
+            }
 
             if (initializing) {
                 return (
@@ -1601,6 +1786,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                             className={`w-16 h-16 rounded-full flex items-center justify-center transition-colors ${
                                                 isMuted ? 'bg-gray-600' : 'bg-white bg-opacity-20'
                                             }`}
+                                            title={isMuted ? 'Включить микрофон' : 'Выключить микрофон'}
                                         >
                                             <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 {isMuted ? (
@@ -1610,10 +1796,25 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                                 )}
                                             </svg>
                                         </button>
-                                        
+
+                                        <button
+                                            onClick={toggleSpeaker}
+                                            className={`w-16 h-16 rounded-full flex items-center justify-center transition-colors ${
+                                                isSpeakerEnabled ? 'bg-yellow-400 text-white' : 'bg-white bg-opacity-20'
+                                            }`}
+                                            title={isSpeakerEnabled ? 'Выключить громкую связь' : 'Включить громкую связь'}
+                                            aria-pressed={isSpeakerEnabled}
+                                        >
+                                            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C11.077 4.663 12 5.109 12 6v12c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8a4 4 0 010 8M18 5a7 7 0 010 14" />
+                                            </svg>
+                                        </button>
+
                                         <button
                                             onClick={endCall}
                                             className="w-20 h-20 bg-red-600 rounded-full flex items-center justify-center hover:bg-red-700 transition-colors"
+                                            title="Завершить звонок"
                                         >
                                             <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
@@ -2135,10 +2336,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
                             <button
                                 onClick={handleAuth}
-                                disabled={loading || !window.firebaseReady}
+                                disabled={loading || !firebaseServices}
                                 className="w-full bg-indigo-600 text-white py-3 rounded-lg font-medium hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                {loading ? 'Загрузка...' : !window.firebaseReady ? 'Инициализация...' : (isLogin ? 'Войти' : 'Зарегистрироваться')}
+                                {loading ? 'Загрузка...' : !firebaseServices ? 'Инициализация...' : (isLogin ? 'Войти' : 'Зарегистрироваться')}
                             </button>
                         </div>
 
