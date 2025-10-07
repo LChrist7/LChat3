@@ -235,7 +235,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 scrollToBottom();
             }, [messages]);
 
+            const isMobile = () => /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
             const ensureAudioOutputs = useCallback(async () => {
+                const audioElement = remoteAudioRef.current;
+                const sinkSupported = !!(audioElement && typeof audioElement.setSinkId === 'function');
+
                 if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
                     setSpeakerDeviceId(null);
                     setEarpieceDeviceId('default');
@@ -272,9 +277,35 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         earpieceId = 'default';
                     }
 
+                    if (!speakerId) {
+                        speakerId = defaultDevice?.deviceId || 'default';
+                    }
+
                     if (speakerId === earpieceId) {
                         const secondary = Array.from(uniqueOutputs.values()).find(device => device.deviceId !== earpieceId);
-                        speakerId = secondary?.deviceId || (speakerId === 'communications' ? defaultDevice?.deviceId : speakerId);
+                        speakerId = secondary?.deviceId || speakerId;
+                    }
+
+                    const allowVirtualCommunications = sinkSupported && !isIOS();
+
+                    if (allowVirtualCommunications) {
+                        if (!earpieceId || earpieceId === speakerId) {
+                            earpieceId = fallbackCommunicationsId || 'communications';
+                        }
+
+                        if (!speakerId || speakerId === earpieceId) {
+                            speakerId = defaultDevice?.deviceId || (earpieceId === 'default' ? 'communications' : 'default');
+                        }
+                    }
+
+                    if (isMobile() && allowVirtualCommunications) {
+                        if (!earpieceId || earpieceId === 'default') {
+                            earpieceId = fallbackCommunicationsId || 'communications';
+                        }
+
+                        if (!speakerId) {
+                            speakerId = defaultDevice?.deviceId || 'default';
+                        }
                     }
 
                     setSpeakerDeviceId(speakerId);
@@ -282,7 +313,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     const communicationsIsDistinct = fallbackCommunicationsId && fallbackCommunicationsId !== (defaultDevice?.deviceId || 'default');
                     const altExists = Boolean(speakerId && earpieceId && speakerId !== earpieceId);
                     const multipleOutputsAvailable = Boolean(hasMultipleOutputs && speakerId && earpieceId);
-                    const communicationsFallbackAvailable = Boolean(speakerId && earpieceId && communicationsIsDistinct && speakerId !== earpieceId);
+                    const communicationsFallbackAvailable = Boolean(allowVirtualCommunications && speakerId && earpieceId && speakerId !== earpieceId);
                     setHasAltAudioOutput(altExists || multipleOutputsAvailable || communicationsFallbackAvailable);
 
                     return { speakerId, earpieceId };
@@ -320,7 +351,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
                 const candidates = [];
 
-                if (earpieceId && earpieceId !== 'default') {
+                if (earpieceId) {
                     candidates.push(earpieceId);
                 }
 
@@ -330,6 +361,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
                 if (!candidates.includes('default')) {
                     candidates.push('default');
+                }
+
+                if (speakerDeviceId && !candidates.includes(speakerDeviceId)) {
+                    candidates.push(speakerDeviceId);
                 }
 
                 for (const candidate of candidates) {
@@ -936,23 +971,42 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
 
                 const { speakerId, earpieceId } = await ensureAudioOutputs();
-                const canToggle = speakerId && earpieceId && speakerId !== earpieceId;
 
-                if (!canToggle) {
-                    alert('Нет альтернативного аудиовыхода для переключения.');
-                    return;
-                }
+                const resolvedSpeakerId = speakerId || speakerDeviceId || 'default';
+                const potentialEarpieceIds = [earpieceId, 'communications', 'default'].filter((id, index, arr) => id && arr.indexOf(id) === index);
+                const potentialSpeakerIds = [resolvedSpeakerId, speakerDeviceId, 'default', 'communications'].filter((id, index, arr) => id && arr.indexOf(id) === index);
+
+                const trySetSink = async (targets, mode) => {
+                    for (const target of targets) {
+                        if (!target) continue;
+
+                        if (audioElement.sinkId === target) {
+                            setCurrentSinkId(target);
+                            setAudioOutputMode(mode);
+                            return true;
+                        }
+
+                        try {
+                            await audioElement.setSinkId(target);
+                            setCurrentSinkId(target);
+                            setAudioOutputMode(mode);
+                            return true;
+                        } catch (error) {
+                            console.warn('⚠️ Не удалось применить аудиовыход', target, error);
+                        }
+                    }
+
+                    return false;
+                };
 
                 const switchToSpeaker = audioOutputMode !== 'speaker';
-                const targetDeviceId = switchToSpeaker ? speakerId : earpieceId;
 
-                try {
-                    await audioElement.setSinkId(targetDeviceId);
-                    setCurrentSinkId(targetDeviceId);
-                    setAudioOutputMode(switchToSpeaker ? 'speaker' : 'earpiece');
-                } catch (error) {
-                    console.error('❌ Не удалось переключить аудиовыход:', error);
-                    alert('Не удалось переключить аудиовыход: ' + (error?.message || 'неизвестная ошибка'));
+                const success = switchToSpeaker
+                    ? await trySetSink(potentialSpeakerIds, 'speaker')
+                    : await trySetSink(potentialEarpieceIds, 'earpiece');
+
+                if (!success) {
+                    alert('Не удалось переключить аудиовыход: устройство не поддерживается.');
                 }
             };
 
