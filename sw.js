@@ -27,7 +27,134 @@ const MESSAGE_TRACKING_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_TRACKED_MESSAGES = 800;
 const handledMessageKeys = new Map();
 
-function pruneTrackedNotifications(now = Date.now()) {
+const DEDUPE_DB_NAME = 'notification-dedupe';
+const DEDUPE_DB_VERSION = 1;
+const HANDLED_STORE = 'handledMessages';
+const NOTIFICATION_STORE = 'notifications';
+
+let dedupeDbPromise = null;
+
+function openDedupeDb() {
+  if (!('indexedDB' in self)) {
+    return Promise.resolve(null);
+  }
+
+  if (!dedupeDbPromise) {
+    dedupeDbPromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(DEDUPE_DB_NAME, DEDUPE_DB_VERSION);
+
+      request.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        if (!db.objectStoreNames.contains(HANDLED_STORE)) {
+          db.createObjectStore(HANDLED_STORE, { keyPath: 'key' });
+        }
+        if (!db.objectStoreNames.contains(NOTIFICATION_STORE)) {
+          db.createObjectStore(NOTIFICATION_STORE, { keyPath: 'key' });
+        }
+      };
+
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    }).catch((error) => {
+      console.warn('IndexedDB недоступна для дедупликации уведомлений:', error);
+      return null;
+    });
+  }
+
+  return dedupeDbPromise;
+}
+
+async function readRecord(storeName, key) {
+  const db = await openDedupeDb();
+  if (!db) {
+    return null;
+  }
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly');
+    const store = tx.objectStore(storeName);
+    const request = store.get(key);
+
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function writeRecord(storeName, record) {
+  const db = await openDedupeDb();
+  if (!db) {
+    return;
+  }
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    store.put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function deleteRecord(storeName, key) {
+  const db = await openDedupeDb();
+  if (!db) {
+    return;
+  }
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    store.delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function pruneStore(storeName, limit, ttl, now = Date.now()) {
+  const db = await openDedupeDb();
+  if (!db) {
+    return;
+  }
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    const entries = [];
+
+    store.openCursor().onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (cursor) {
+        const value = cursor.value || {};
+        entries.push({ key: cursor.key, timestamp: value.timestamp || 0 });
+        cursor.continue();
+        return;
+      }
+
+      const freshEntries = [];
+
+      for (const entry of entries) {
+        if (now - entry.timestamp > ttl) {
+          store.delete(entry.key);
+        } else {
+          freshEntries.push(entry);
+        }
+      }
+
+      if (freshEntries.length > limit) {
+        freshEntries.sort((a, b) => a.timestamp - b.timestamp);
+        while (freshEntries.length > limit) {
+          const entry = freshEntries.shift();
+          store.delete(entry.key);
+        }
+      }
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function pruneTrackedNotifications(now = Date.now()) {
   for (const [id, timestamp] of trackedNotificationIds.entries()) {
     if (now - timestamp > NOTIFICATION_TTL_MS) {
       trackedNotificationIds.delete(id);
@@ -41,9 +168,11 @@ function pruneTrackedNotifications(now = Date.now()) {
       trackedNotificationIds.delete(oldestId);
     }
   }
+
+  await pruneStore(NOTIFICATION_STORE, MAX_TRACKED_NOTIFICATIONS, NOTIFICATION_TTL_MS, now);
 }
 
-function hasTrackedNotification(id) {
+async function hasTrackedNotification(id) {
   if (!id) {
     return false;
   }
@@ -59,20 +188,42 @@ function hasTrackedNotification(id) {
     trackedNotificationIds.delete(id);
   }
 
+  try {
+    const record = await readRecord(NOTIFICATION_STORE, id);
+    if (record && record.timestamp && now - record.timestamp <= NOTIFICATION_TTL_MS) {
+      trackedNotificationIds.set(id, record.timestamp);
+      return true;
+    }
+
+    if (record) {
+      await deleteRecord(NOTIFICATION_STORE, id);
+    }
+  } catch (error) {
+    console.warn('Ошибка чтения информации о показанных уведомлениях:', error);
+  }
+
   return false;
 }
 
-function trackNotification(id) {
+async function trackNotification(id) {
   if (!id) {
     return;
   }
 
   const now = Date.now();
-  pruneTrackedNotifications(now);
   trackedNotificationIds.set(id, now);
+
+  try {
+    await Promise.all([
+      pruneTrackedNotifications(now),
+      writeRecord(NOTIFICATION_STORE, { key: id, timestamp: now })
+    ]);
+  } catch (error) {
+    console.warn('Ошибка сохранения информации о показанном уведомлении:', error);
+  }
 }
 
-function pruneHandledMessages(now = Date.now()) {
+async function pruneHandledMessages(now = Date.now()) {
   for (const [key, timestamp] of handledMessageKeys.entries()) {
     if (now - timestamp > MESSAGE_TRACKING_TTL_MS) {
       handledMessageKeys.delete(key);
@@ -87,9 +238,11 @@ function pruneHandledMessages(now = Date.now()) {
       handledMessageKeys.delete(oldestKey);
     }
   }
+
+  await pruneStore(HANDLED_STORE, MAX_TRACKED_MESSAGES, MESSAGE_TRACKING_TTL_MS, now);
 }
 
-function hasHandledMessage(key) {
+async function hasHandledMessage(key) {
   if (!key) {
     return false;
   }
@@ -105,17 +258,40 @@ function hasHandledMessage(key) {
     handledMessageKeys.delete(key);
   }
 
+  try {
+    const record = await readRecord(HANDLED_STORE, key);
+
+    if (record && record.timestamp && now - record.timestamp <= MESSAGE_TRACKING_TTL_MS) {
+      handledMessageKeys.set(key, record.timestamp);
+      return true;
+    }
+
+    if (record) {
+      await deleteRecord(HANDLED_STORE, key);
+    }
+  } catch (error) {
+    console.warn('Ошибка чтения состояния обработанного сообщения:', error);
+  }
+
   return false;
 }
 
-function markMessageHandled(key) {
+async function markMessageHandled(key) {
   if (!key) {
     return;
   }
 
   const now = Date.now();
-  pruneHandledMessages(now);
   handledMessageKeys.set(key, now);
+
+  try {
+    await Promise.all([
+      pruneHandledMessages(now),
+      writeRecord(HANDLED_STORE, { key, timestamp: now })
+    ]);
+  } catch (error) {
+    console.warn('Ошибка сохранения обработанного сообщения:', error);
+  }
 }
 
 function normalizeBooleanFlag(value) {
@@ -127,9 +303,7 @@ function collectMessageKeys({ payload = {}, notificationData = {}, fallbackTag =
   const keys = [];
 
   const candidates = [
-    payload.fcmMessageId,
-    payload.messageId,
-    payload.messageID,
+    mergedData.dedupeKey,
     mergedData.messageUuid,
     mergedData.messageUUID,
     mergedData.messageGuid,
@@ -139,8 +313,15 @@ function collectMessageKeys({ payload = {}, notificationData = {}, fallbackTag =
     mergedData.notificationId,
     mergedData.notificationID,
     mergedData.id,
-    mergedData.dedupeKey,
-    mergedData['google.c.a.c_id']
+    mergedData.chatMessageId,
+    mergedData.chatMessageID,
+    mergedData.clientMessageId,
+    mergedData.clientMessageID,
+    mergedData.sentAt,
+    mergedData['google.c.a.c_id'],
+    payload.messageId,
+    payload.messageID,
+    payload.fcmMessageId
   ];
 
   for (const candidate of candidates) {
@@ -157,21 +338,27 @@ function collectMessageKeys({ payload = {}, notificationData = {}, fallbackTag =
   return keys;
 }
 
-function hasAnyMessageHandled(keys = []) {
-  return keys.some((key) => hasHandledMessage(key));
+async function hasAnyMessageHandled(keys = []) {
+  for (const key of keys) {
+    if (await hasHandledMessage(key)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
-function markMessageKeysHandled(keys = []) {
-  for (const key of keys) {
-    markMessageHandled(key);
-  }
+async function markMessageKeysHandled(keys = []) {
+  await Promise.all(keys.map((key) => markMessageHandled(key)));
 }
 
 function shouldDisplayCustomNotification(payload = {}, data = {}) {
   const forceCustom = normalizeBooleanFlag(data.forceCustomNotification);
   const silent = normalizeBooleanFlag(data.silent);
+  const disableCustom = normalizeBooleanFlag(data.disableCustomNotification);
+  const preferNative = normalizeBooleanFlag(data.preferNativeNotification);
 
-  if (silent) {
+  if (silent || disableCustom) {
     return false;
   }
 
@@ -181,7 +368,7 @@ function shouldDisplayCustomNotification(payload = {}, data = {}) {
 
   const hasNotificationPayload = Boolean(payload.notification && Object.keys(payload.notification).length);
 
-  if (hasNotificationPayload) {
+  if (hasNotificationPayload && preferNative) {
     return false;
   }
 
@@ -268,11 +455,11 @@ async function displayNotification({
   const messageId = data.messageId || data.messageID || data.id;
   const dedupeKey = data.dedupeKey || messageId || `${resolvedTag}:${body || ''}`;
 
-  if (hasTrackedNotification(dedupeKey)) {
+  if (await hasTrackedNotification(dedupeKey)) {
     return;
   }
 
-  trackNotification(dedupeKey);
+  await trackNotification(dedupeKey);
 
   if (!(await ensureUniqueNotification(resolvedTag, messageId || dedupeKey))) {
     return;
@@ -412,11 +599,11 @@ async function handleNotificationPayload(payload, source = 'push') {
     fallbackBody: body
   });
 
-  if (hasAnyMessageHandled(messageKeys)) {
+  if (await hasAnyMessageHandled(messageKeys)) {
     return;
   }
 
-  markMessageKeysHandled(messageKeys);
+  await markMessageKeysHandled(messageKeys);
 
   const dedupeKey = messageKeys[0];
 
@@ -440,7 +627,9 @@ async function handleNotificationPayload(payload, source = 'push') {
 if (messaging) {
   messaging.onBackgroundMessage((payload) => {
     console.log('Фоновое сообщение получено:', payload);
-    handleNotificationPayload(payload, 'messaging');
+    handleNotificationPayload(payload, 'messaging').catch((error) => {
+      console.warn('Ошибка обработки фонового сообщения:', error);
+    });
   });
 }
 
@@ -480,11 +669,11 @@ async function handleLocalNotificationMessage(message) {
     fallbackBody: body
   });
 
-  if (hasAnyMessageHandled(messageKeys)) {
+  if (await hasAnyMessageHandled(messageKeys)) {
     return;
   }
 
-  markMessageKeysHandled(messageKeys);
+  await markMessageKeysHandled(messageKeys);
 
   const dedupeKey = messageKeys[0];
 
