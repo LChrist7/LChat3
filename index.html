@@ -206,6 +206,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const [earpieceDeviceId, setEarpieceDeviceId] = useState('default');
             const [currentSinkId, setCurrentSinkId] = useState('default');
             const [hasAltAudioOutput, setHasAltAudioOutput] = useState(false);
+            const initialRouteAppliedRef = useRef(false);
             
             const messageInputRef = useRef(null);
             const messagesEndRef = useRef(null);
@@ -245,6 +246,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 try {
                     const devices = await navigator.mediaDevices.enumerateDevices();
                     const audioOutputs = devices.filter(device => device.kind === 'audiooutput');
+                    const uniqueOutputs = new Map(audioOutputs.map(device => [device.deviceId || 'default', device]));
+                    const hasMultipleOutputs = uniqueOutputs.size > 1;
 
                     const defaultDevice = audioOutputs.find(device => device.deviceId === 'default');
                     const communicationsDevice = audioOutputs.find(device => device.deviceId === 'communications');
@@ -252,12 +255,35 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     const labelledEarpiece = audioOutputs.find(device => /earpiece|receiver|телефон|headset|наушн|гарнитура/i.test(device.label));
                     const alternativeDevice = audioOutputs.find(device => device.deviceId !== 'default' && device.deviceId !== 'communications');
 
-                    const speakerId = (labelledSpeaker || alternativeDevice || defaultDevice || communicationsDevice)?.deviceId || null;
-                    const earpieceId = (labelledEarpiece || communicationsDevice || defaultDevice || alternativeDevice)?.deviceId || 'default';
+                    const fallbackCommunicationsId = communicationsDevice?.deviceId || 'communications';
+
+                    let speakerId = labelledSpeaker?.deviceId
+                        || (alternativeDevice && alternativeDevice.deviceId !== fallbackCommunicationsId ? alternativeDevice.deviceId : null)
+                        || (defaultDevice && defaultDevice.deviceId !== fallbackCommunicationsId ? defaultDevice.deviceId : null)
+                        || null;
+
+                    let earpieceId = labelledEarpiece?.deviceId
+                        || fallbackCommunicationsId
+                        || defaultDevice?.deviceId
+                        || alternativeDevice?.deviceId
+                        || 'default';
+
+                    if (!earpieceId) {
+                        earpieceId = 'default';
+                    }
+
+                    if (speakerId === earpieceId) {
+                        const secondary = Array.from(uniqueOutputs.values()).find(device => device.deviceId !== earpieceId);
+                        speakerId = secondary?.deviceId || (speakerId === 'communications' ? defaultDevice?.deviceId : speakerId);
+                    }
 
                     setSpeakerDeviceId(speakerId);
                     setEarpieceDeviceId(earpieceId);
-                    setHasAltAudioOutput(!!(speakerId && earpieceId && speakerId !== earpieceId));
+                    const communicationsIsDistinct = fallbackCommunicationsId && fallbackCommunicationsId !== (defaultDevice?.deviceId || 'default');
+                    const altExists = Boolean(speakerId && earpieceId && speakerId !== earpieceId);
+                    const multipleOutputsAvailable = Boolean(hasMultipleOutputs && speakerId && earpieceId);
+                    const communicationsFallbackAvailable = Boolean(speakerId && earpieceId && communicationsIsDistinct && speakerId !== earpieceId);
+                    setHasAltAudioOutput(altExists || multipleOutputsAvailable || communicationsFallbackAvailable);
 
                     return { speakerId, earpieceId };
                 } catch (error) {
@@ -269,6 +295,78 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             }, []);
 
+            const routeAudioToEarpiece = useCallback(async (force = false) => {
+                const audioElement = remoteAudioRef.current;
+
+                if (!audioElement) {
+                    return;
+                }
+
+                audioElement.setAttribute('playsinline', 'true');
+                audioElement.setAttribute('webkit-playsinline', 'true');
+                audioElement.setAttribute('x-webkit-airplay', 'deny');
+
+                const supported = typeof audioElement.setSinkId === 'function';
+                setCanSwitchAudioOutput(supported);
+
+                const { earpieceId } = await ensureAudioOutputs();
+                const currentSink = audioElement && 'sinkId' in audioElement ? audioElement.sinkId || 'default' : 'default';
+                setCurrentSinkId(currentSink);
+
+                if (!supported) {
+                    setAudioOutputMode('earpiece');
+                    return;
+                }
+
+                const candidates = [];
+
+                if (earpieceId && earpieceId !== 'default') {
+                    candidates.push(earpieceId);
+                }
+
+                if (!candidates.includes('communications')) {
+                    candidates.push('communications');
+                }
+
+                if (!candidates.includes('default')) {
+                    candidates.push('default');
+                }
+
+                for (const candidate of candidates) {
+                    const isSpeakerCandidate = candidate === speakerDeviceId || (!speakerDeviceId && candidate === 'default');
+
+                    if (!force && currentSink === candidate) {
+                        setAudioOutputMode(isSpeakerCandidate ? 'speaker' : 'earpiece');
+                        return;
+                    }
+
+                    try {
+                        await audioElement.setSinkId(candidate);
+                        setCurrentSinkId(candidate);
+                        setAudioOutputMode(isSpeakerCandidate ? 'speaker' : 'earpiece');
+                        return;
+                    } catch (error) {
+                        console.warn('⚠️ Не удалось направить звук в разговорный динамик через', candidate, error);
+                    }
+                }
+            }, [ensureAudioOutputs, speakerDeviceId]);
+
+            useEffect(() => {
+                if (!activeCall) {
+                    initialRouteAppliedRef.current = false;
+                    return;
+                }
+
+                if (!callState) {
+                    return;
+                }
+
+                if (callState === 'active' && !initialRouteAppliedRef.current) {
+                    initialRouteAppliedRef.current = true;
+                    routeAudioToEarpiece(true);
+                }
+            }, [activeCall, callState, routeAudioToEarpiece]);
+
             useEffect(() => {
                 if (!activeCall || !callState) {
                     return;
@@ -278,15 +376,11 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 const supported = !!(audioElement && typeof audioElement.setSinkId === 'function');
                 setCanSwitchAudioOutput(supported);
 
-                if (!supported) {
-                    return;
-                }
-
                 ensureAudioOutputs().then(({ speakerId, earpieceId }) => {
                     const sink = audioElement && 'sinkId' in audioElement ? audioElement.sinkId || 'default' : 'default';
                     setCurrentSinkId(sink);
 
-                    if (speakerId && sink === speakerId && speakerId !== earpieceId) {
+                    if (supported && speakerId && sink === speakerId && speakerId !== earpieceId) {
                         setAudioOutputMode('speaker');
                     } else {
                         setAudioOutputMode('earpiece');
@@ -299,6 +393,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     return;
                 }
 
+                initialRouteAppliedRef.current = false;
                 setAudioOutputMode('earpiece');
                 setCurrentSinkId('default');
                 setSpeakerDeviceId(null);
@@ -516,20 +611,23 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						
 						remoteStreamRef.current = event.streams[0];
 						
-						if (remoteAudioRef.current) {
-							console.log('✅ Audio элемент найден');
-							remoteAudioRef.current.srcObject = event.streams[0];
-							
-							remoteAudioRef.current.play()
-								.then(() => {
-									console.log('✅ Воспроизведение началось');
-									console.log('📊 Громкость:', remoteAudioRef.current.volume);
-									console.log('🔇 Muted:', remoteAudioRef.current.muted);
-								})
-								.catch(err => {
-									console.error('❌ Ошибка воспроизведения:', err);
-								});
-						} else {
+                                                if (remoteAudioRef.current) {
+                                                        console.log('✅ Audio элемент найден');
+                                                        remoteAudioRef.current.srcObject = event.streams[0];
+
+                                                        remoteAudioRef.current.play()
+                                                                .then(() => {
+                                                                        console.log('✅ Воспроизведение началось');
+                                                                        console.log('📊 Громкость:', remoteAudioRef.current.volume);
+                                                                        console.log('🔇 Muted:', remoteAudioRef.current.muted);
+                                                                        if (!initialRouteAppliedRef.current) {
+                                                                            routeAudioToEarpiece(true);
+                                                                        }
+                                                                })
+                                                                .catch(err => {
+                                                                        console.error('❌ Ошибка воспроизведения:', err);
+                                                                });
+                                                } else {
 							console.error('❌ Audio элемент НЕ найден!');
 						}
 					};
@@ -642,18 +740,21 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						
 						remoteStreamRef.current = event.streams[0];
 						
-						if (remoteAudioRef.current) {
-							console.log('✅ Audio элемент найден');
-							remoteAudioRef.current.srcObject = event.streams[0];
-							
-							remoteAudioRef.current.play()
-								.then(() => {
-									console.log('✅ Воспроизведение началось');
-									console.log('📊 Громкость:', remoteAudioRef.current.volume);
-									console.log('🔇 Muted:', remoteAudioRef.current.muted);
-								})
-								.catch(err => {
-									console.error('❌ Ошибка воспроизведения:', err);
+                                                if (remoteAudioRef.current) {
+                                                        console.log('✅ Audio элемент найден');
+                                                        remoteAudioRef.current.srcObject = event.streams[0];
+
+                                                        remoteAudioRef.current.play()
+                                                                .then(() => {
+                                                                        console.log('✅ Воспроизведение началось');
+                                                                        console.log('📊 Громкость:', remoteAudioRef.current.volume);
+                                                                        console.log('🔇 Muted:', remoteAudioRef.current.muted);
+                                                                        if (!initialRouteAppliedRef.current) {
+                                                                            routeAudioToEarpiece(true);
+                                                                        }
+                                                                })
+                                                                .catch(err => {
+                                                                        console.error('❌ Ошибка воспроизведения:', err);
 								});
 						} else {
 							console.error('❌ Audio элемент НЕ найден!');
