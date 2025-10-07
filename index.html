@@ -1178,7 +1178,20 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                 if (message.senderId !== user.uid) {
                                     const senderLogin = selectedChat.participantsData[message.senderId];
                                     const notifText = message.type === 'audio' ? '🎤 Голосовое сообщение' : message.text;
-                                    
+
+                                    const shouldShowNotification = () => {
+                                        if (typeof document === 'undefined') return true;
+                                        if (document.visibilityState === 'hidden') return true;
+                                        if (typeof document.hasFocus === 'function') {
+                                            return !document.hasFocus();
+                                        }
+                                        return false;
+                                    };
+
+                                    if (!shouldShowNotification()) {
+                                        return;
+                                    }
+
                                     if (navigator.serviceWorker && navigator.serviceWorker.controller) {
                                         navigator.serviceWorker.controller.postMessage({
                                             type: 'NEW_MESSAGE',
