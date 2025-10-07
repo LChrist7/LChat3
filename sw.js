@@ -20,6 +20,7 @@ try {
 }
 
 const CACHE_NAME = 'messenger-v5';
+const DEDUPE_CACHE = 'messenger-notification-dedupe-v1';
 const RECENT_NOTIFICATION_TTL = 5 * 60 * 1000;
 const RECENT_TAG_TTL = 15 * 1000;
 const CLIENT_STATE_TTL = 30 * 1000;
@@ -33,7 +34,7 @@ const clientState = {
   timestamp: 0
 };
 
-function pruneRecentNotifications(now = Date.now()) {
+async function pruneRecentNotifications(now = Date.now()) {
   for (const [key, timestamp] of recentNotifications.entries()) {
     if (now - timestamp > RECENT_NOTIFICATION_TTL) {
       recentNotifications.delete(key);
@@ -44,6 +45,33 @@ function pruneRecentNotifications(now = Date.now()) {
     if (now - timestamp > RECENT_TAG_TTL) {
       recentTags.delete(tag);
     }
+  }
+
+  try {
+    const cache = await caches.open(DEDUPE_CACHE);
+    const requests = await cache.keys();
+    await Promise.all(
+      requests.map(async (request) => {
+        const response = await cache.match(request);
+        if (!response) {
+          return;
+        }
+
+        let timestamp = 0;
+        try {
+          const data = await response.clone().json();
+          timestamp = data.timestamp || 0;
+        } catch (error) {
+          timestamp = 0;
+        }
+
+        if (!timestamp || now - timestamp > RECENT_NOTIFICATION_TTL) {
+          await cache.delete(request);
+        }
+      })
+    );
+  } catch (error) {
+    console.warn('Не удалось очистить кеш дедупликации уведомлений:', error);
   }
 }
 
@@ -75,6 +103,32 @@ function isClientStateFresh(now = Date.now()) {
 async function shouldSuppressNotification(data = {}) {
   const now = Date.now();
   const stateFresh = isClientStateFresh(now);
+
+  if (stateFresh) {
+    if (clientState.visible) {
+      return true;
+    }
+
+    if (data.chatId && clientState.chatId && data.chatId === clientState.chatId) {
+      return true;
+    }
+  }
+
+  if (data.chatId) {
+    const controlledClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of controlledClients) {
+      if (client.visibilityState === 'visible') {
+        try {
+          const url = new URL(client.url);
+          if (url.hash && url.hash.includes(data.chatId)) {
+            return true;
+          }
+        } catch (error) {
+          // ignore URL parsing issues
+        }
+      }
+    }
+  }
 
   if (stateFresh && clientState.visible) {
     return true;
@@ -125,6 +179,63 @@ function buildNotificationPayload(payload = {}) {
   };
 }
 
+async function hasRecentNotificationKey(key, now = Date.now()) {
+  if (!key) {
+    return false;
+  }
+
+  if (recentNotifications.has(key)) {
+    return true;
+  }
+
+  try {
+    const cache = await caches.open(DEDUPE_CACHE);
+    const request = new Request(`https://dedupe.local/${encodeURIComponent(key)}`);
+    const response = await cache.match(request);
+    if (!response) {
+      return false;
+    }
+
+    let timestamp = 0;
+    try {
+      const data = await response.clone().json();
+      timestamp = data.timestamp || 0;
+    } catch (error) {
+      timestamp = 0;
+    }
+
+    if (!timestamp || now - timestamp > RECENT_NOTIFICATION_TTL) {
+      await cache.delete(request);
+      return false;
+    }
+
+    recentNotifications.set(key, timestamp);
+    return true;
+  } catch (error) {
+    console.warn('Не удалось проверить кеш дедупликации уведомлений:', error);
+    return false;
+  }
+}
+
+async function rememberNotificationKey(key, now = Date.now()) {
+  if (!key) {
+    return;
+  }
+
+  recentNotifications.set(key, now);
+
+  try {
+    const cache = await caches.open(DEDUPE_CACHE);
+    const request = new Request(`https://dedupe.local/${encodeURIComponent(key)}`);
+    const response = new Response(JSON.stringify({ timestamp: now }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+    await cache.put(request, response);
+  } catch (error) {
+    console.warn('Не удалось сохранить ключ уведомления в кеш:', error);
+  }
+}
+
 async function showNotificationOnce(notification) {
   if (!notification) {
     return;
@@ -140,10 +251,12 @@ async function showNotificationOnce(notification) {
     return;
   }
 
-  pruneRecentNotifications(now);
+  await pruneRecentNotifications(now);
 
-  if (dedupeKeys.some((key) => recentNotifications.has(key))) {
-    return;
+  for (const key of dedupeKeys) {
+    if (await hasRecentNotificationKey(key, now)) {
+      return;
+    }
   }
 
   if (tag) {
@@ -153,18 +266,29 @@ async function showNotificationOnce(notification) {
     }
   }
 
-  dedupeKeys.forEach((key) => {
-    recentNotifications.set(key, now);
-  });
+  for (const key of dedupeKeys) {
+    await rememberNotificationKey(key, now);
+  }
 
   if (tag) {
     recentTags.set(tag, now);
   }
 
-  if (tag && self.registration && self.registration.getNotifications) {
+  if (self.registration && self.registration.getNotifications) {
     try {
-      const existing = await self.registration.getNotifications({ tag });
-      existing.forEach((item) => item.close());
+      if (tag) {
+        const existingByTag = await self.registration.getNotifications({ tag });
+        existingByTag.forEach((item) => item.close());
+      }
+
+      const allNotifications = await self.registration.getNotifications();
+      allNotifications.forEach((item) => {
+        const sameChat = data.chatId && item.data && item.data.chatId === data.chatId;
+        const sameBody = item.body === body;
+        if (sameChat || sameBody) {
+          item.close();
+        }
+      });
     } catch (error) {
       console.warn('Не удалось получить существующие уведомления:', error);
     }
@@ -200,6 +324,9 @@ async function showNotificationOnce(notification) {
 if (messaging) {
   messaging.onBackgroundMessage((payload) => {
     const notification = buildNotificationPayload(payload);
+    if (!notification) {
+      return;
+    }
     return showNotificationOnce(notification);
   });
 }
@@ -281,7 +408,12 @@ self.addEventListener('notificationclick', (event) => {
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
-  event.waitUntil(caches.open(CACHE_NAME));
+  event.waitUntil(
+    Promise.all([
+      caches.open(CACHE_NAME),
+      caches.open(DEDUPE_CACHE)
+    ])
+  );
 });
 
 self.addEventListener('activate', (event) => {
@@ -289,7 +421,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames.map((cacheName) => {
-          if (cacheName !== CACHE_NAME) {
+          if (cacheName !== CACHE_NAME && cacheName !== DEDUPE_CACHE) {
             return caches.delete(cacheName);
           }
           return undefined;
