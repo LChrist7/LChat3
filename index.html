@@ -159,7 +159,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+        const { useState, useEffect, useRef, useCallback } = React;
 
         function loginToEmail(login) {
             return `${login.toLowerCase()}@messenger.local`;
@@ -200,6 +200,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const [callState, setCallState] = useState(null);
             const [isMuted, setIsMuted] = useState(false);
             const [callDuration, setCallDuration] = useState(0);
+            const [audioOutputMode, setAudioOutputMode] = useState('earpiece');
+            const [canSwitchAudioOutput, setCanSwitchAudioOutput] = useState(false);
+            const [speakerDeviceId, setSpeakerDeviceId] = useState(null);
+            const [earpieceDeviceId, setEarpieceDeviceId] = useState('default');
+            const [currentSinkId, setCurrentSinkId] = useState('default');
+            const [hasAltAudioOutput, setHasAltAudioOutput] = useState(false);
             
             const messageInputRef = useRef(null);
             const messagesEndRef = useRef(null);
@@ -227,6 +233,124 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             useEffect(() => {
                 scrollToBottom();
             }, [messages]);
+
+            const ensureAudioOutputs = useCallback(async () => {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+                    setSpeakerDeviceId(null);
+                    setEarpieceDeviceId('default');
+                    setHasAltAudioOutput(false);
+                    return { speakerId: null, earpieceId: 'default' };
+                }
+
+                try {
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    const audioOutputs = devices.filter(device => device.kind === 'audiooutput');
+
+                    const defaultDevice = audioOutputs.find(device => device.deviceId === 'default');
+                    const communicationsDevice = audioOutputs.find(device => device.deviceId === 'communications');
+                    const labelledSpeaker = audioOutputs.find(device => /speaker|динамик|hands?-?free|loudspeaker/i.test(device.label));
+                    const labelledEarpiece = audioOutputs.find(device => /earpiece|receiver|телефон|headset|наушн|гарнитура/i.test(device.label));
+                    const alternativeDevice = audioOutputs.find(device => device.deviceId !== 'default' && device.deviceId !== 'communications');
+
+                    const speakerId = (labelledSpeaker || alternativeDevice || defaultDevice || communicationsDevice)?.deviceId || null;
+                    const earpieceId = (labelledEarpiece || communicationsDevice || defaultDevice || alternativeDevice)?.deviceId || 'default';
+
+                    setSpeakerDeviceId(speakerId);
+                    setEarpieceDeviceId(earpieceId);
+                    setHasAltAudioOutput(!!(speakerId && earpieceId && speakerId !== earpieceId));
+
+                    return { speakerId, earpieceId };
+                } catch (error) {
+                    console.error('❌ Не удалось получить список аудиоустройств:', error);
+                    setSpeakerDeviceId(null);
+                    setEarpieceDeviceId('default');
+                    setHasAltAudioOutput(false);
+                    return { speakerId: null, earpieceId: 'default' };
+                }
+            }, []);
+
+            useEffect(() => {
+                if (!activeCall || !callState) {
+                    return;
+                }
+
+                const audioElement = remoteAudioRef.current;
+                const supported = !!(audioElement && typeof audioElement.setSinkId === 'function');
+                setCanSwitchAudioOutput(supported);
+
+                if (!supported) {
+                    return;
+                }
+
+                ensureAudioOutputs().then(({ speakerId, earpieceId }) => {
+                    const sink = audioElement && 'sinkId' in audioElement ? audioElement.sinkId || 'default' : 'default';
+                    setCurrentSinkId(sink);
+
+                    if (speakerId && sink === speakerId && speakerId !== earpieceId) {
+                        setAudioOutputMode('speaker');
+                    } else {
+                        setAudioOutputMode('earpiece');
+                    }
+                });
+            }, [activeCall, callState, ensureAudioOutputs]);
+
+            useEffect(() => {
+                if (activeCall) {
+                    return;
+                }
+
+                setAudioOutputMode('earpiece');
+                setCurrentSinkId('default');
+                setSpeakerDeviceId(null);
+                setEarpieceDeviceId('default');
+                setHasAltAudioOutput(false);
+                setCanSwitchAudioOutput(false);
+            }, [activeCall]);
+
+            useEffect(() => {
+                if (!activeCall || !canSwitchAudioOutput) {
+                    return;
+                }
+
+                if (!navigator.mediaDevices) {
+                    return;
+                }
+
+                const handleDeviceChange = () => {
+                    ensureAudioOutputs();
+                };
+
+                if (navigator.mediaDevices.addEventListener) {
+                    navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
+                    return () => {
+                        navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+                    };
+                }
+
+                const originalHandler = navigator.mediaDevices.ondevicechange;
+                const deviceChangeWrapper = (event) => {
+                    handleDeviceChange();
+                    if (typeof originalHandler === 'function') {
+                        originalHandler(event);
+                    }
+                };
+
+                navigator.mediaDevices.ondevicechange = deviceChangeWrapper;
+
+                return () => {
+                    if (navigator.mediaDevices.ondevicechange === deviceChangeWrapper) {
+                        navigator.mediaDevices.ondevicechange = originalHandler || null;
+                    }
+                };
+            }, [activeCall, canSwitchAudioOutput, ensureAudioOutputs]);
+
+            useEffect(() => {
+                if (speakerDeviceId && currentSinkId === speakerDeviceId && speakerDeviceId !== earpieceDeviceId) {
+                    setAudioOutputMode('speaker');
+                } else {
+                    setAudioOutputMode('earpiece');
+                }
+            }, [currentSinkId, speakerDeviceId, earpieceDeviceId]);
 
             const getDeviceId = () => {
                 let deviceId = localStorage.getItem('deviceId');
@@ -702,6 +826,35 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             };
 
+            const toggleAudioOutput = async () => {
+                const audioElement = remoteAudioRef.current;
+
+                if (!audioElement || !canSwitchAudioOutput) {
+                    alert('Переключение аудиовыхода не поддерживается на этом устройстве.');
+                    return;
+                }
+
+                const { speakerId, earpieceId } = await ensureAudioOutputs();
+                const canToggle = speakerId && earpieceId && speakerId !== earpieceId;
+
+                if (!canToggle) {
+                    alert('Нет альтернативного аудиовыхода для переключения.');
+                    return;
+                }
+
+                const switchToSpeaker = audioOutputMode !== 'speaker';
+                const targetDeviceId = switchToSpeaker ? speakerId : earpieceId;
+
+                try {
+                    await audioElement.setSinkId(targetDeviceId);
+                    setCurrentSinkId(targetDeviceId);
+                    setAudioOutputMode(switchToSpeaker ? 'speaker' : 'earpiece');
+                } catch (error) {
+                    console.error('❌ Не удалось переключить аудиовыход:', error);
+                    alert('Не удалось переключить аудиовыход: ' + (error?.message || 'неизвестная ошибка'));
+                }
+            };
+
             const startCallTimer = () => {
                 callTimerRef.current = setInterval(() => {
                     setCallDuration(prev => prev + 1);
@@ -1104,10 +1257,25 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         const unsubscribe = onSnapshot(userRef, (snapshot) => {
                             if (snapshot.exists()) {
                                 const userData = snapshot.data();
+                                const lastSeenValue = userData.lastSeen;
+
+                                let lastSeenMs = null;
+                                if (lastSeenValue) {
+                                    if (typeof lastSeenValue.toMillis === 'function') {
+                                        lastSeenMs = lastSeenValue.toMillis();
+                                    } else if (typeof lastSeenValue.seconds === 'number') {
+                                        lastSeenMs = lastSeenValue.seconds * 1000;
+                                    }
+                                }
+
+                                const isRecent = typeof lastSeenMs === 'number'
+                                    ? (Date.now() - lastSeenMs) <= 60000
+                                    : false;
+
                                 setOnlineUsers(prev => ({
                                     ...prev,
                                     [otherUserId]: {
-                                        online: userData.online || false,
+                                        online: Boolean(userData.online) && isRecent,
                                         lastSeen: userData.lastSeen
                                     }
                                 }));
@@ -1126,30 +1294,110 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 const { doc, setDoc, serverTimestamp } = window.firebaseFunctions;
                 const userRef = doc(window.firebaseDb, 'users', user.uid);
 
-                setDoc(userRef, {
-                    online: true,
-                    lastSeen: serverTimestamp()
-                }, { merge: true });
+                let heartbeatInterval = null;
+                let visibilityTimeout = null;
+                let currentStatus = null;
 
-                const interval = setInterval(() => {
-                    setDoc(userRef, {
-                        online: true,
-                        lastSeen: serverTimestamp()
-                    }, { merge: true });
-                }, 30000);
-
-                const handleBeforeUnload = () => {
-                    setDoc(userRef, {
-                        online: false,
-                        lastSeen: serverTimestamp()
-                    }, { merge: true });
+                const clearHeartbeat = () => {
+                    if (heartbeatInterval) {
+                        clearInterval(heartbeatInterval);
+                        heartbeatInterval = null;
+                    }
                 };
 
+                const updatePresence = (isOnline, options = {}) => {
+                    const { immediate = false } = options;
+
+                    if (currentStatus === isOnline) {
+                        return;
+                    }
+                    currentStatus = isOnline;
+
+                    clearHeartbeat();
+                    if (visibilityTimeout) {
+                        clearTimeout(visibilityTimeout);
+                        visibilityTimeout = null;
+                    }
+
+                    if (isOnline) {
+                        setDoc(userRef, {
+                            online: true,
+                            lastSeen: serverTimestamp()
+                        }, { merge: true });
+
+                        heartbeatInterval = setInterval(() => {
+                            setDoc(userRef, {
+                                online: true,
+                                lastSeen: serverTimestamp()
+                            }, { merge: true });
+                        }, 20000);
+                    } else {
+                        const pushOffline = () => {
+                            setDoc(userRef, {
+                                online: false,
+                                lastSeen: serverTimestamp()
+                            }, { merge: true });
+                        };
+
+                        if (immediate) {
+                            pushOffline();
+                        } else {
+                            // Небольшая задержка защищает от ложных переключений при быстром сворачивании
+                            visibilityTimeout = setTimeout(pushOffline, 1000);
+                        }
+                    }
+                };
+
+                const hasDocumentFocus = () => {
+                    return typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+                };
+
+                const handleVisibilityChange = () => {
+                    if (document.visibilityState === 'visible' && hasDocumentFocus()) {
+                        updatePresence(true);
+                    } else if (document.visibilityState === 'hidden') {
+                        updatePresence(false);
+                    }
+                };
+
+                const handleFocus = () => updatePresence(true);
+                const handleBlur = () => updatePresence(false);
+                const handleBeforeUnload = () => updatePresence(false, { immediate: true });
+                const handlePageHide = () => updatePresence(false, { immediate: true });
+                const handleFreeze = () => updatePresence(false, { immediate: true });
+                const handleOffline = () => updatePresence(false, { immediate: true });
+                const handleOnline = () => {
+                    if (document.visibilityState === 'visible' && hasDocumentFocus()) {
+                        updatePresence(true);
+                    }
+                };
+
+                updatePresence(true);
+
+                window.addEventListener('visibilitychange', handleVisibilityChange);
+                window.addEventListener('focus', handleFocus);
+                window.addEventListener('blur', handleBlur);
                 window.addEventListener('beforeunload', handleBeforeUnload);
+                window.addEventListener('pagehide', handlePageHide);
+                window.addEventListener('freeze', handleFreeze);
+                window.addEventListener('offline', handleOffline);
+                window.addEventListener('online', handleOnline);
 
                 return () => {
-                    clearInterval(interval);
+                    clearHeartbeat();
+                    if (visibilityTimeout) {
+                        clearTimeout(visibilityTimeout);
+                    }
+
+                    window.removeEventListener('visibilitychange', handleVisibilityChange);
+                    window.removeEventListener('focus', handleFocus);
+                    window.removeEventListener('blur', handleBlur);
                     window.removeEventListener('beforeunload', handleBeforeUnload);
+                    window.removeEventListener('pagehide', handlePageHide);
+                    window.removeEventListener('freeze', handleFreeze);
+                    window.removeEventListener('offline', handleOffline);
+                    window.removeEventListener('online', handleOnline);
+
                     setDoc(userRef, {
                         online: false,
                         lastSeen: serverTimestamp()
@@ -1178,7 +1426,20 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                 if (message.senderId !== user.uid) {
                                     const senderLogin = selectedChat.participantsData[message.senderId];
                                     const notifText = message.type === 'audio' ? '🎤 Голосовое сообщение' : message.text;
-                                    
+
+                                    const shouldShowNotification = () => {
+                                        if (typeof document === 'undefined') return true;
+                                        if (document.visibilityState === 'hidden') return true;
+                                        if (typeof document.hasFocus === 'function') {
+                                            return !document.hasFocus();
+                                        }
+                                        return false;
+                                    };
+
+                                    if (!shouldShowNotification()) {
+                                        return;
+                                    }
+
                                     if (navigator.serviceWorker && navigator.serviceWorker.controller) {
                                         navigator.serviceWorker.controller.postMessage({
                                             type: 'NEW_MESSAGE',
@@ -1507,6 +1768,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             };
 
+            const audioToggleAvailable = canSwitchAudioOutput && hasAltAudioOutput;
+
             if (initializing) {
                 return (
                     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
@@ -1596,6 +1859,27 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                     </div>
                                     
                                     <div className="flex justify-center space-x-6">
+                                        <button
+                                            onClick={toggleAudioOutput}
+                                            disabled={!audioToggleAvailable}
+                                            className={`w-16 h-16 rounded-full flex items-center justify-center transition-colors ${
+                                                audioOutputMode === 'speaker' ? 'bg-indigo-500 bg-opacity-40' : 'bg-white bg-opacity-20'
+                                            } ${audioToggleAvailable ? 'text-white hover:bg-opacity-30' : 'text-white/50 cursor-not-allowed opacity-60'}`}
+                                            aria-label={audioOutputMode === 'speaker' ? 'Переключить на разговорный динамик' : 'Включить громкую связь'}
+                                            title={audioToggleAvailable ? (audioOutputMode === 'speaker' ? 'Переключить на разговорный динамик' : 'Включить громкую связь') : 'Переключение аудио недоступно'}
+                                        >
+                                            {audioOutputMode === 'speaker' ? (
+                                                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5l-5 4H4a1 1 0 00-1 1v4a1 1 0 001 1h2l5 4V5z" />
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16.5 8.25a4.5 4.5 0 010 7.5M19 6a7 7 0 010 12" />
+                                                </svg>
+                                            ) : (
+                                                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21L9.465 11.11a11.042 11.042 0 005.425 5.425l2.723-1.758a1 1 0 011.21.502l1.498 4.493a1 1 0 01-.949 1.316H18a2 2 0 01-2-2v-1" />
+                                                </svg>
+                                            )}
+                                        </button>
+
                                         <button
                                             onClick={toggleMute}
                                             className={`w-16 h-16 rounded-full flex items-center justify-center transition-colors ${
