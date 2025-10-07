@@ -740,29 +740,65 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 return `${mins}:${secs.toString().padStart(2, '0')}`;
             };
 
-			useEffect(() => {
-				if ('serviceWorker' in navigator) {
-					navigator.serviceWorker.register('/sw.js')
-						.then(registration => {
-							console.log('✅ Cache SW зарегистрирован');
-						})
-						.catch(error => {
-							console.error('❌ Ошибка регистрации Cache SW:', error);
-						});
-					
-					navigator.serviceWorker.register('/firebase-messaging-sw.js')
-						.then(registration => {
-							console.log('✅ Firebase Messaging SW зарегистрирован');
-						})
-						.catch(error => {
-							console.warn('⚠️ Firebase Messaging SW недоступен (это нормально для некоторых хостингов):', error.message);
-						});
-				}
+            useEffect(() => {
+                if (!('serviceWorker' in navigator)) return;
 
-				if ('Notification' in window) {
-					setNotificationsEnabled(Notification.permission === 'granted');
-				}
-			}, []);
+                navigator.serviceWorker.register('/sw.js')
+                    .then(() => {
+                        console.log('✅ Cache SW зарегистрирован');
+                    })
+                    .catch(error => {
+                        console.error('❌ Ошибка регистрации Cache SW:', error);
+                    });
+
+                const ensureMessagingServiceWorker = async () => {
+                    try {
+                        const messagingRegistration = await navigator.serviceWorker.getRegistration('/firebase-messaging-sw.js');
+
+                        if (isStandaloneMode()) {
+                            if (!messagingRegistration) {
+                                await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+                                console.log('✅ Firebase Messaging SW зарегистрирован только для PWA');
+                            }
+                        } else if (messagingRegistration) {
+                            await messagingRegistration.unregister();
+                            console.log('🧹 Firebase Messaging SW удалён для браузерного режима');
+                        }
+                    } catch (error) {
+                        console.warn('⚠️ Firebase Messaging SW недоступен:', error?.message || error);
+                    }
+                };
+
+                ensureMessagingServiceWorker();
+
+                const mediaQuery = window.matchMedia('(display-mode: standalone)');
+                const handleDisplayModeChange = () => {
+                    ensureMessagingServiceWorker();
+                };
+
+                if (mediaQuery.addEventListener) {
+                    mediaQuery.addEventListener('change', handleDisplayModeChange);
+                } else if (mediaQuery.addListener) {
+                    mediaQuery.addListener(handleDisplayModeChange);
+                }
+
+                window.addEventListener('visibilitychange', handleDisplayModeChange);
+
+                return () => {
+                    if (mediaQuery.removeEventListener) {
+                        mediaQuery.removeEventListener('change', handleDisplayModeChange);
+                    } else if (mediaQuery.removeListener) {
+                        mediaQuery.removeListener(handleDisplayModeChange);
+                    }
+                    window.removeEventListener('visibilitychange', handleDisplayModeChange);
+                };
+            }, []);
+
+            useEffect(() => {
+                if ('Notification' in window) {
+                    setNotificationsEnabled(Notification.permission === 'granted' && isStandaloneMode());
+                }
+            }, []);
 
             const setupFCMToken = async (userId) => {
                 if (!window.firebaseMessaging) return;
@@ -797,7 +833,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             const removeFCMToken = async (userId) => {
-                if (!fcmToken || !userId) return;
+                if (!userId) return;
                 try {
                     const { doc, deleteDoc } = window.firebaseFunctions;
                     const deviceId = getDeviceId();
@@ -817,6 +853,16 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }, 1000);
                 return () => clearTimeout(timer);
             }, [user, notificationsEnabled, fcmToken]);
+
+            useEffect(() => {
+                if (!user) return;
+
+                const notificationGranted = ('Notification' in window) && Notification.permission === 'granted';
+
+                if (!isStandaloneMode() || !notificationsEnabled || !notificationGranted) {
+                    removeFCMToken(user.uid);
+                }
+            }, [user, notificationsEnabled]);
 
             useEffect(() => {
                 if (!user) return;
