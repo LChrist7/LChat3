@@ -94,7 +94,7 @@
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
         import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, getDocs, limit, deleteDoc, updateDoc, arrayUnion } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, getDocs, limit, deleteDoc, updateDoc, arrayUnion, arrayRemove } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
         import { getMessaging, getToken, onMessage } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js';
         import { getStorage, ref, uploadBytes, getDownloadURL } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js';
         
@@ -144,6 +144,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 			deleteDoc,
 			updateDoc,
 			arrayUnion,
+			arrayRemove,
 			getToken,
 			onMessage,
 			ref,
@@ -198,6 +199,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const [incomingCall, setIncomingCall] = useState(null);
             const [activeCall, setActiveCall] = useState(null);
             const [callState, setCallState] = useState(null);
+            const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+            const [chatToDelete, setChatToDelete] = useState(null);
+            const [deleteInProgress, setDeleteInProgress] = useState(false);
+            const [deleteError, setDeleteError] = useState('');
             const [isMuted, setIsMuted] = useState(false);
             const [callDuration, setCallDuration] = useState(0);
             
@@ -902,7 +907,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     await uploadBytes(storageRef, audioBlob);
                     const audioUrl = await getDownloadURL(storageRef);
                     
-                    const { collection, addDoc, serverTimestamp, doc, setDoc } = window.firebaseFunctions;
+                    const { collection, addDoc, serverTimestamp, doc, setDoc, arrayRemove } = window.firebaseFunctions;
                     const messagesRef = collection(window.firebaseDb, 'chats', selectedChat.id, 'messages');
                     
                     await addDoc(messagesRef, {
@@ -919,7 +924,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     await setDoc(chatRef, {
                         lastMessage: '🎤 Голосовое сообщение',
                         lastMessageTime: serverTimestamp(),
-                        [`unreadCount.${otherUserId}`]: (selectedChat.unreadCount?.[otherUserId] || 0) + 1
+                        [`unreadCount.${otherUserId}`]: (selectedChat.unreadCount?.[otherUserId] || 0) + 1,
+                        deletedFor: arrayRemove(user.uid, otherUserId)
                     }, { merge: true });
                     
                     setAudioBlob(null);
@@ -1081,15 +1087,28 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 );
 
                 const unsubscribe = onSnapshot(q, (snapshot) => {
-                    const chatsData = snapshot.docs.map(doc => ({
-                        id: doc.id,
-                        ...doc.data()
-                    }));
+                    const chatsData = snapshot.docs
+                        .map(doc => ({
+                            id: doc.id,
+                            ...doc.data()
+                        }))
+                        .filter(chat => {
+                            const deletedFor = Array.isArray(chat.deletedFor) ? chat.deletedFor : [];
+                            return !deletedFor.includes(user.uid);
+                        });
                     setChats(chatsData);
                 });
 
                 return () => unsubscribe();
             }, [user]);
+
+            useEffect(() => {
+                if (selectedChat && !chats.some(chat => chat.id === selectedChat.id)) {
+                    setSelectedChat(null);
+                    setMessages([]);
+                    setShowMobileChat(false);
+                }
+            }, [chats, selectedChat]);
 
             useEffect(() => {
                 if (!user || chats.length === 0) return;
@@ -1405,7 +1424,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
             const createChat = async (recipientLogin, recipientId = null) => {
                 try {
-                    const { collection, query, where, getDocs, addDoc, doc, serverTimestamp } = window.firebaseFunctions;
+                    const { collection, query, where, getDocs, addDoc, doc, serverTimestamp, updateDoc, arrayRemove } = window.firebaseFunctions;
                     
                     let actualRecipientId = recipientId;
                     let actualRecipientLogin = recipientLogin;
@@ -1443,7 +1462,14 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     });
                     
                     if (existingChat) {
-                        setSelectedChat({ id: existingChat.id, ...existingChat.data() });
+                        const existingChatData = existingChat.data();
+                        if (Array.isArray(existingChatData.deletedFor) && existingChatData.deletedFor.includes(user.uid)) {
+                            await updateDoc(existingChat.ref, {
+                                deletedFor: arrayRemove(user.uid)
+                            });
+                            existingChatData.deletedFor = existingChatData.deletedFor.filter(id => id !== user.uid);
+                        }
+                        setSelectedChat({ id: existingChat.id, ...existingChatData });
                         setShowNewChat(false);
                         setSearchUser('');
                         setSearchResults([]);
@@ -1459,6 +1485,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         },
                         lastMessage: '',
                         lastMessageTime: serverTimestamp(),
+                        [`unreadCount.${otherUserId}`]: (selectedChat.unreadCount?.[otherUserId] || 0) + 1,
                         createdAt: serverTimestamp()
                     };
                     
@@ -1474,6 +1501,74 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             };
 
+            const openDeleteDialogForChat = (chat) => {
+                setChatToDelete(chat);
+                setDeleteError('');
+                setShowDeleteDialog(true);
+            };
+
+            const closeDeleteDialog = () => {
+                if (deleteInProgress) {
+                    return;
+                }
+                setShowDeleteDialog(false);
+                setChatToDelete(null);
+                setDeleteError('');
+            };
+
+            const handleDeleteChat = async (scope) => {
+                if (!chatToDelete || deleteInProgress) return;
+
+                setDeleteInProgress(true);
+                setDeleteError('');
+
+                try {
+                    const chatId = chatToDelete.id;
+
+                    if (scope === 'all') {
+                        const { collection, query, limit, getDocs, deleteDoc, doc } = window.firebaseFunctions;
+                        const messagesRef = collection(window.firebaseDb, 'chats', chatId, 'messages');
+
+                        while (true) {
+                            const batchSnapshot = await getDocs(query(messagesRef, limit(50)));
+                            if (batchSnapshot.empty) {
+                                break;
+                            }
+                            await Promise.all(batchSnapshot.docs.map(messageDoc => deleteDoc(messageDoc.ref)));
+                        }
+
+                        const typingStatusRef = doc(window.firebaseDb, 'chats', chatId, 'typing', 'status');
+                        try {
+                            await deleteDoc(typingStatusRef);
+                        } catch (typingError) {
+                            console.warn('Failed to delete typing status:', typingError);
+                        }
+
+                        await deleteDoc(doc(window.firebaseDb, 'chats', chatId));
+                    } else {
+                        const { doc, updateDoc, arrayUnion } = window.firebaseFunctions;
+                        const chatRef = doc(window.firebaseDb, 'chats', chatId);
+                        await updateDoc(chatRef, {
+                            deletedFor: arrayUnion(user.uid)
+                        });
+                    }
+
+                    if (selectedChat?.id === chatId) {
+                        setSelectedChat(null);
+                        setMessages([]);
+                        setShowMobileChat(false);
+                    }
+
+                    setShowDeleteDialog(false);
+                    setChatToDelete(null);
+                } catch (error) {
+                    console.error('Ошибка удаления диалога:', error);
+                    setDeleteError(error?.message || 'Не удалось удалить диалог. Попробуйте снова.');
+                } finally {
+                    setDeleteInProgress(false);
+                }
+            };
+
             const sendMessage = async () => {
                 if (!newMessage.trim() || !selectedChat) return;
 
@@ -1481,7 +1576,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 setNewMessage('');
 
                 try {
-                    const { collection, addDoc, serverTimestamp, doc, setDoc } = window.firebaseFunctions;
+                    const { collection, addDoc, serverTimestamp, doc, setDoc, arrayRemove } = window.firebaseFunctions;
                     
                     const messagesRef = collection(window.firebaseDb, 'chats', selectedChat.id, 'messages');
                     await addDoc(messagesRef, {
@@ -1497,7 +1592,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     await setDoc(chatRef, {
                         lastMessage: messageText,
                         lastMessageTime: serverTimestamp(),
-                        [`unreadCount.${otherUserId}`]: (selectedChat.unreadCount?.[otherUserId] || 0) + 1
+                        [`unreadCount.${otherUserId}`]: (selectedChat.unreadCount?.[otherUserId] || 0) + 1,
+                        deletedFor: arrayRemove(user.uid, otherUserId)
                     }, { merge: true });
                     
                     const typingRef = doc(window.firebaseDb, 'chats', selectedChat.id, 'typing', 'status');
@@ -1604,6 +1700,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     setSelectedChat(null);
                     setMessages([]);
                     setFcmToken(null);
+                    setShowDeleteDialog(false);
+                    setChatToDelete(null);
+                    setDeleteError('');
+                    setDeleteInProgress(false);
                 } catch (err) {
                     console.error('Ошибка выхода:', err);
                 }
@@ -1678,6 +1778,72 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
                                             </svg>
                                             <span>Принять</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {showDeleteDialog && chatToDelete && (
+                            <div
+                                className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4"
+                                onClick={closeDeleteDialog}
+                            >
+                                <div
+                                    className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-5"
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    <div>
+                                        <h3 className="text-lg font-semibold text-gray-800 mb-1">
+                                            Удалить диалог
+                                        </h3>
+                                        <p className="text-sm text-gray-600">
+                                            Выберите, как удалить переписку. Это действие нельзя отменить.
+                                        </p>
+                                    </div>
+
+                                    {deleteError && (
+                                        <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                                            {deleteError}
+                                        </div>
+                                    )}
+
+                                    <div className="space-y-2">
+                                        <button
+                                            onClick={() => handleDeleteChat('me')}
+                                            disabled={deleteInProgress}
+                                            className={`w-full py-3 rounded-lg font-medium transition-colors ${
+                                                deleteInProgress
+                                                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                                                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                            }`}
+                                        >
+                                            Удалить только у меня
+                                        </button>
+                                        <button
+                                            onClick={() => handleDeleteChat('all')}
+                                            disabled={deleteInProgress}
+                                            className={`w-full py-3 rounded-lg font-medium transition-colors ${
+                                                deleteInProgress
+                                                    ? 'bg-red-200 text-red-100 cursor-not-allowed'
+                                                    : 'bg-red-600 text-white hover:bg-red-700'
+                                            }`}
+                                        >
+                                            Удалить у всех участников
+                                        </button>
+                                    </div>
+
+                                    <div className="flex justify-end">
+                                        <button
+                                            onClick={closeDeleteDialog}
+                                            disabled={deleteInProgress}
+                                            className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                                                deleteInProgress
+                                                    ? 'text-gray-400 cursor-not-allowed'
+                                                    : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100'
+                                            }`}
+                                        >
+                                            Отмена
                                         </button>
                                     </div>
                                 </div>
@@ -1974,28 +2140,44 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                                             return <p className="text-xs text-gray-500">оффлайн</p>;
                                                         }
                                                     })()}
-                                                </div>
+                                            </div>
                                             </div>
                                             
-                                            <button
-                                                onClick={() => {
-                                                    const otherUserId = selectedChat.participants.find(id => id !== user.uid);
-                                                    const otherUserLogin = selectedChat.participantsData[otherUserId];
-                                                    initiateCall(otherUserId, otherUserLogin);
-                                                }}
-                                                disabled={!onlineUsers[selectedChat.participants.find(id => id !== user.uid)]?.online}
-                                                className={`p-2 rounded-full transition-colors ${
-                                                    onlineUsers[selectedChat.participants.find(id => id !== user.uid)]?.online
-                                                        ? 'bg-green-600 hover:bg-green-700 text-white'
-                                                        : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                                                }`}
-                                                title={onlineUsers[selectedChat.participants.find(id => id !== user.uid)]?.online ? 'Позвонить' : 'Пользователь оффлайн'}
-                                            >
-                                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                                                </svg>
-                                            </button>
-                                        </div>
+                                            <div className="flex items-center space-x-2">
+                                                <button
+                                                    onClick={() => openDeleteDialogForChat(selectedChat)}
+                                                    disabled={deleteInProgress}
+                                                    className={`p-2 rounded-full border transition-colors ${
+                                                        deleteInProgress
+                                                            ? 'border-gray-200 text-gray-300 cursor-not-allowed'
+                                                            : 'border-transparent text-gray-500 hover:text-red-600 hover:bg-red-50 hover:border-red-200'
+                                                    }`}
+                                                    title="������� ������"
+                                                >
+                                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 7h12M10 7V5a1 1 0 011-1h2a1 1 0 011 1v2m1 0v11a2 2 0 01-2 2H9a2 2 0 01-2-2V7h10z" />
+                                                    </svg>
+                                                </button>
+
+                                                <button
+                                                    onClick={() => {
+                                                        const otherUserId = selectedChat.participants.find(id => id !== user.uid);
+                                                        const otherUserLogin = selectedChat.participantsData[otherUserId];
+                                                        initiateCall(otherUserId, otherUserLogin);
+                                                    }}
+                                                    disabled={!onlineUsers[selectedChat.participants.find(id => id !== user.uid)]?.online}
+                                                    className={`p-2 rounded-full transition-colors ${
+                                                        onlineUsers[selectedChat.participants.find(id => id !== user.uid)]?.online
+                                                            ? 'bg-green-600 hover:bg-green-700 text-white'
+                                                            : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                                    }`}
+                                                    title={onlineUsers[selectedChat.participants.find(id => id !== user.uid)]?.online ? '���������' : '������������ ������'}
+                                                >
+                                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                                                    </svg>
+                                                </button>
+                                            </div>
 
                                         <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
                                             {messages.length === 0 ? (
