@@ -756,18 +756,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 				if ('serviceWorker' in navigator) {
 					navigator.serviceWorker.register('/sw.js')
 						.then(registration => {
-							console.log('✅ Cache SW зарегистрирован');
+							console.log('[App] Service Worker registered', registration.scope);
 						})
 						.catch(error => {
-							console.error('❌ Ошибка регистрации Cache SW:', error);
-						});
-					
-					navigator.serviceWorker.register('/firebase-messaging-sw.js')
-						.then(registration => {
-							console.log('✅ Firebase Messaging SW зарегистрирован');
-						})
-						.catch(error => {
-							console.warn('⚠️ Firebase Messaging SW недоступен (это нормально для некоторых хостингов):', error.message);
+							console.error('[App] Service Worker registration failed:', error);
 						});
 				}
 
@@ -2514,3 +2506,9 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
     </script>
 </body>
 </html>
+
+
+
+
+
+

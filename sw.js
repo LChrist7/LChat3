@@ -1,44 +1,110 @@
 const CACHE_NAME = 'messenger-v2';
+const DEFAULT_ICON =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%234F46E5'/%3E%3Ctext x='50' y='70' font-size='60' text-anchor='middle' fill='white' font-family='Arial, sans-serif' font-weight='bold'%3EM%3C/text%3E%3C/svg%3E";
 
-// Установка Service Worker
+const FIREBASE_CONFIG = {
+  apiKey: 'AIzaSyD-JW_GPcXYE6Mo87wKDAKKtRSwIGzLp5g',
+  authDomain: 'lchat3-7ad86.firebaseapp.com',
+  projectId: 'lchat3-7ad86',
+  storageBucket: 'lchat3-7ad86.firebasestorage.app',
+  messagingSenderId: '956958925747',
+  appId: '1:956958925747:web:966a2906f540538251a1c6'
+};
+
+let messaging = null;
+
+try {
+  importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js');
+  importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js');
+
+  if (!(self.firebase && firebase.apps && firebase.apps.length)) {
+    firebase.initializeApp(FIREBASE_CONFIG);
+  }
+  messaging = firebase.messaging();
+  console.log('[SW] Firebase Messaging initialised');
+} catch (error) {
+  console.warn('[SW] Unable to initialise Firebase Messaging:', error);
+}
+
+const buildNotificationOptions = ({ body, data = {}, tag }) => ({
+  body: body || 'У вас новое сообщение',
+  icon: DEFAULT_ICON,
+  badge: DEFAULT_ICON,
+  tag: tag || 'message-notification',
+  data,
+  requireInteraction: false,
+  vibrate: [200, 100, 200]
+});
+
+const getTagFromData = data => {
+  if (!data) return 'message-notification';
+  if (data.messageId) return `message-${data.messageId}`;
+  if (data.chatId) return `chat-${data.chatId}`;
+  if (data.tag) return data.tag;
+  return 'message-notification';
+};
+
+const extractUrlFromPayload = payload => {
+  if (payload?.fcmOptions?.link) return payload.fcmOptions.link;
+  if (payload?.data?.url) return payload.data.url;
+  return '/';
+};
+
+const showNotification = ({ title, body, data = {} }) => {
+  const tag = getTagFromData(data);
+  const options = buildNotificationOptions({ body, data, tag });
+  return self.registration.showNotification(title || 'Сообщение', options);
+};
+
+const showNotificationFromPayload = payload => {
+  const title =
+    payload?.notification?.title || payload?.data?.title || payload?.data?.sender || 'Новое сообщение';
+  const body =
+    payload?.notification?.body || payload?.data?.body || payload?.data?.text || 'У вас новое сообщение';
+  const data = { ...(payload?.data || {}) };
+
+  if (!data.url) {
+    data.url = extractUrlFromPayload(payload);
+  }
+
+  return showNotification({ title, body, data });
+};
+
+// Service Worker lifecycle -------------------------------------------------
 self.addEventListener('install', event => {
-  console.log('✅ Cache SW: Установка...');
-  self.skipWaiting(); // Активируемся сразу
-  
+  console.log('[SW] install');
+  self.skipWaiting();
+
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => {
-        console.log('✅ Cache SW: Кэш готов');
-        return Promise.resolve();
-      })
+    caches.open(CACHE_NAME).then(() => {
+      console.log('[SW] cache opened');
+    })
   );
 });
 
-// Активация Service Worker
 self.addEventListener('activate', event => {
-  console.log('✅ Cache SW: Активация...');
+  console.log('[SW] activate');
   event.waitUntil(
     Promise.all([
-      caches.keys().then(cacheNames => {
-        return Promise.all(
+      caches.keys().then(cacheNames =>
+        Promise.all(
           cacheNames.map(cacheName => {
             if (cacheName !== CACHE_NAME) {
-              console.log('🗑️ Удаление старого кэша:', cacheName);
+              console.log('[SW] delete old cache:', cacheName);
               return caches.delete(cacheName);
             }
+            return null;
           })
-        );
-      }),
+        )
+      ),
       clients.claim()
     ])
   );
 });
 
-// Перехват запросов
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
-  
-  // Игнорируем запросы к внешним ресурсам
+
   if (
     url.origin.includes('firebase') ||
     url.origin.includes('google') ||
@@ -51,86 +117,104 @@ self.addEventListener('fetch', event => {
     url.pathname.includes('manifest.json') ||
     url.protocol === 'chrome-extension:'
   ) {
-    // Пропускаем эти запросы без кэширования
-    event.respondWith(fetch(event.request).catch(() => {
-      return new Response('', { status: 404 });
-    }));
+    event.respondWith(fetch(event.request).catch(() => new Response('', { status: 404 })));
     return;
   }
-  
-  // Для HTML страниц - network first
+
   if (event.request.destination === 'document') {
     event.respondWith(
       fetch(event.request)
         .then(response => {
           if (response && response.status === 200) {
-            const responseClone = response.clone();
-            caches.open(CACHE_NAME).then(cache => {
-              cache.put(event.request, responseClone);
-            });
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
           }
           return response;
         })
-        .catch(() => {
-          return caches.match(event.request)
-            .then(cachedResponse => {
-              return cachedResponse || new Response('Offline', { status: 503 });
-            });
-        })
+        .catch(() =>
+          caches.match(event.request).then(cached => cached || new Response('Offline', { status: 503 }))
+        )
     );
     return;
   }
-  
-  // Для остальных - cache first
+
   event.respondWith(
-    caches.match(event.request)
-      .then(response => {
-        return response || fetch(event.request)
-          .then(fetchResponse => {
+    caches
+      .match(event.request)
+      .then(
+        response =>
+          response ||
+          fetch(event.request).then(fetchResponse => {
             if (fetchResponse && fetchResponse.status === 200 && event.request.method === 'GET') {
-              const responseClone = fetchResponse.clone();
-              caches.open(CACHE_NAME).then(cache => {
-                cache.put(event.request, responseClone);
-              });
+              const clone = fetchResponse.clone();
+              caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
             }
             return fetchResponse;
-          });
-      })
+          })
+      )
       .catch(() => new Response('Offline', { status: 503 }))
   );
 });
 
-// Прием сообщений для локальных уведомлений
+// Messaging handlers -------------------------------------------------------
+if (messaging) {
+  messaging.onBackgroundMessage(payload => {
+    console.log('[SW] onBackgroundMessage', payload);
+    return showNotificationFromPayload(payload);
+  });
+}
+
+self.addEventListener('push', event => {
+  if (!event.data) return;
+
+  let payload = {};
+  try {
+    payload = event.data.json() || {};
+  } catch (error) {
+    console.warn('[SW] push payload parse error', error);
+  }
+
+  event.waitUntil(showNotificationFromPayload(payload));
+});
+
 self.addEventListener('message', event => {
-  if (event.data && event.data.type === 'NEW_MESSAGE') {
-    const { sender, text } = event.data;
-    
-    self.registration.showNotification(sender, {
-      body: text,
-      icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
-      badge: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
-      tag: 'message-notification',
-      requireInteraction: false,
-      vibrate: [200, 100, 200]
-    });
+  const data = event.data || {};
+
+  if (data.type === 'NEW_MESSAGE') {
+    const { sender, text, chatId, messageId, url } = data;
+    const notificationData = {
+      title: sender || 'Новое сообщение',
+      body: text || 'У вас новое сообщение',
+      data: {
+        chatId,
+        messageId,
+        url: url || (chatId ? `/chat/${chatId}` : '/'),
+        tag: messageId ? `message-${messageId}` : chatId ? `chat-${chatId}` : undefined
+      }
+    };
+
+    event.waitUntil(showNotification(notificationData));
   }
 });
 
-// Клик по уведомлению
 self.addEventListener('notificationclick', event => {
   event.notification.close();
-  
+  const targetUrl = event.notification?.data?.url || '/';
+
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true })
-      .then(clientList => {
-        for (let client of clientList) {
-          if (client.url.includes(self.location.origin) && 'focus' in client) {
-            return client.focus();
-          }
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
+      for (const client of clientList) {
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          client.postMessage({ type: 'notification-click', data: event.notification?.data || {} });
+          return client.focus();
         }
-        if (clients.openWindow) {
-          return clients.openWindow('/');
-        }
-      })
+      }
+
+      if (clients.openWindow) {
+        return clients.openWindow(targetUrl);
+      }
+
+      return undefined;
+    })
   );
 });
