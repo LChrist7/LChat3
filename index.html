@@ -276,6 +276,22 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 ]
             };
 
+            const routeRemoteAudioToEarpiece = async () => {
+                const audioEl = remoteAudioRef.current;
+                if (!audioEl) return;
+
+                if (typeof audioEl.setSinkId === 'function') {
+                    try {
+                        await audioEl.setSinkId('communications');
+                        console.log('🔊 Аудио переведено в разговорный динамик через communications sink');
+                    } catch (error) {
+                        console.warn('⚠️ Не удалось переключить аудио в разговорный динамик:', error);
+                    }
+                } else {
+                    console.log('ℹ️ setSinkId не поддерживается в этом браузере');
+                }
+            };
+
             const initiateCall = async (recipientId, recipientLogin) => {
                 try {
                     console.log('📞 Инициируем звонок к:', recipientLogin);
@@ -392,18 +408,19 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						
 						remoteStreamRef.current = event.streams[0];
 						
-						if (remoteAudioRef.current) {
-							console.log('✅ Audio элемент найден');
-							remoteAudioRef.current.srcObject = event.streams[0];
-							
-							remoteAudioRef.current.play()
-								.then(() => {
-									console.log('✅ Воспроизведение началось');
-									console.log('📊 Громкость:', remoteAudioRef.current.volume);
-									console.log('🔇 Muted:', remoteAudioRef.current.muted);
-								})
-								.catch(err => {
-									console.error('❌ Ошибка воспроизведения:', err);
+                                                if (remoteAudioRef.current) {
+                                                        console.log('✅ Audio элемент найден');
+                                                        remoteAudioRef.current.srcObject = event.streams[0];
+
+                                                        remoteAudioRef.current.play()
+                                                                .then(() => {
+                                                                        console.log('✅ Воспроизведение началось');
+                                                                        console.log('📊 Громкость:', remoteAudioRef.current.volume);
+                                                                        console.log('🔇 Muted:', remoteAudioRef.current.muted);
+                                                                        routeRemoteAudioToEarpiece();
+                                                                })
+                                                                .catch(err => {
+                                                                        console.error('❌ Ошибка воспроизведения:', err);
 								});
 						} else {
 							console.error('❌ Audio элемент НЕ найден!');
@@ -511,25 +528,26 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         peerConnection.addTrack(track, stream);
                     });
                     
-					peerConnection.ontrack = (event) => {
-						console.log('✅ Получен удаленный стрим');
-						console.log('📊 Треков в стриме:', event.streams[0].getTracks().length);
-						console.log('📊 Аудио треков:', event.streams[0].getAudioTracks().length);
-						
-						remoteStreamRef.current = event.streams[0];
-						
-						if (remoteAudioRef.current) {
-							console.log('✅ Audio элемент найден');
-							remoteAudioRef.current.srcObject = event.streams[0];
-							
-							remoteAudioRef.current.play()
-								.then(() => {
-									console.log('✅ Воспроизведение началось');
-									console.log('📊 Громкость:', remoteAudioRef.current.volume);
-									console.log('🔇 Muted:', remoteAudioRef.current.muted);
-								})
-								.catch(err => {
-									console.error('❌ Ошибка воспроизведения:', err);
+                                        peerConnection.ontrack = (event) => {
+                                                console.log('✅ Получен удаленный стрим');
+                                                console.log('📊 Треков в стриме:', event.streams[0].getTracks().length);
+                                                console.log('📊 Аудио треков:', event.streams[0].getAudioTracks().length);
+
+                                                remoteStreamRef.current = event.streams[0];
+
+                                                if (remoteAudioRef.current) {
+                                                        console.log('✅ Audio элемент найден');
+                                                        remoteAudioRef.current.srcObject = event.streams[0];
+
+                                                        remoteAudioRef.current.play()
+                                                                .then(() => {
+                                                                        console.log('✅ Воспроизведение началось');
+                                                                        console.log('📊 Громкость:', remoteAudioRef.current.volume);
+                                                                        console.log('🔇 Muted:', remoteAudioRef.current.muted);
+                                                                        routeRemoteAudioToEarpiece();
+                                                                })
+                                                                .catch(err => {
+                                                                        console.error('❌ Ошибка воспроизведения:', err);
 								});
 						} else {
 							console.error('❌ Audio элемент НЕ найден!');
