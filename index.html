@@ -160,7 +160,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+        const { useState, useEffect, useRef, useCallback } = React;
 
         function loginToEmail(login) {
             return `${login.toLowerCase()}@messenger.local`;
@@ -205,6 +205,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const [deleteError, setDeleteError] = useState('');
             const [isMuted, setIsMuted] = useState(false);
             const [callDuration, setCallDuration] = useState(0);
+            const [isSpeakerOn, setIsSpeakerOn] = useState(false);
             
             const messageInputRef = useRef(null);
             const messagesEndRef = useRef(null);
@@ -219,6 +220,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const remoteAudioRef = useRef(null);
             const callTimerRef = useRef(null);
             const ringtoneRef = useRef(null);
+            const isSpeakerOnRef = useRef(false);
 
             const isIOS = () => {
                 return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
@@ -251,6 +253,48 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     } catch (e) {}
                     ringtoneRef.current = null;
                 }
+            };
+
+            const canSelectAudioOutput = typeof HTMLMediaElement !== 'undefined' &&
+                typeof HTMLMediaElement.prototype !== 'undefined' &&
+                typeof HTMLMediaElement.prototype.setSinkId === 'function';
+
+            const setCallAudioOutput = useCallback(async (useSpeaker) => {
+                if (!canSelectAudioOutput) return;
+                const audioElement = remoteAudioRef.current;
+                if (!audioElement || typeof audioElement.setSinkId !== 'function') {
+                    return;
+                }
+
+                const preferredSinkId = useSpeaker ? 'default' : 'communications';
+
+                try {
+                    await audioElement.setSinkId(preferredSinkId);
+                } catch (error) {
+                    console.warn('Не удалось переключить аудиовыход:', preferredSinkId, error);
+                    if (!useSpeaker) {
+                        try {
+                            await audioElement.setSinkId('default');
+                        } catch (fallbackError) {
+                            console.warn('Не удалось применить аудиовыход по умолчанию:', fallbackError);
+                        }
+                    }
+                }
+            }, [canSelectAudioOutput, remoteAudioRef]);
+
+            useEffect(() => {
+                if (!canSelectAudioOutput) return;
+                if (!remoteAudioRef.current || !remoteAudioRef.current.srcObject) return;
+                setCallAudioOutput(isSpeakerOn);
+            }, [isSpeakerOn, canSelectAudioOutput, setCallAudioOutput, remoteAudioRef]);
+
+            useEffect(() => {
+                isSpeakerOnRef.current = isSpeakerOn;
+            }, [isSpeakerOn]);
+
+            const toggleSpeaker = () => {
+                if (!canSelectAudioOutput) return;
+                setIsSpeakerOn(prev => !prev);
             };
 
             const iceServers = {
@@ -312,6 +356,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         isCaller: true
                     });
                     setCallState('calling');
+                    setIsSpeakerOn(false);
                     playRingtone();
                     
                     const { doc, onSnapshot } = window.firebaseFunctions;
@@ -380,6 +425,9 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						if (remoteAudioRef.current) {
 							console.log('✅ Audio элемент найден');
 							remoteAudioRef.current.srcObject = event.streams[0];
+							if (canSelectAudioOutput) {
+								setCallAudioOutput(isSpeakerOnRef.current);
+							}
 							
 							remoteAudioRef.current.play()
 								.then(() => {
@@ -473,6 +521,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     
                     console.log('📞 Принимаем звонок:', incomingCall.id);
                     stopRingtone();
+                    setIsSpeakerOn(false);
                     
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     localStreamRef.current = stream;
@@ -506,6 +555,9 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						if (remoteAudioRef.current) {
 							console.log('✅ Audio элемент найден');
 							remoteAudioRef.current.srcObject = event.streams[0];
+							if (canSelectAudioOutput) {
+								setCallAudioOutput(isSpeakerOnRef.current);
+							}
 							
 							remoteAudioRef.current.play()
 								.then(() => {
@@ -671,6 +723,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     setCallState(null);
                     setCallDuration(0);
                     setIsMuted(false);
+                    setIsSpeakerOn(false);
                     
                 } catch (error) {
                     console.error('Ошибка завершения звонка:', error);
@@ -1872,6 +1925,31 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                                 )}
                                             </svg>
                                         </button>
+                                        
+                                        {canSelectAudioOutput && (
+                                            <button
+                                                onClick={toggleSpeaker}
+                                                className={`w-16 h-16 rounded-full flex items-center justify-center transition-colors ${
+                                                    isSpeakerOn ? 'bg-white bg-opacity-20' : 'bg-white bg-opacity-10'
+                                                }`}
+                                                title={isSpeakerOn ? 'Выключить громкую связь' : 'Включить громкую связь'}
+                                            >
+                                                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    {isSpeakerOn ? (
+                                                        <g>
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 4.5L5.25 8H4a1 1 0 00-1 1v6a1 1 0 001 1h1.25L9 18.5V4.5z" />
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16.5 8.25a4.5 4.5 0 010 7.5" />
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.5 6a7.5 7.5 0 010 12" />
+                                                        </g>
+                                                    ) : (
+                                                        <g>
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 4.5L5.25 8H4a1 1 0 00-1 1v6a1 1 0 001 1h1.25L9 18.5V4.5z" />
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9l3 3m0 0l3-3m-3 3l3 3m-3-3l-3 3" />
+                                                        </g>
+                                                    )}
+                                                </svg>
+                                            </button>
+                                        )}
                                         
                                         <button
                                             onClick={endCall}
