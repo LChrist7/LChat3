@@ -19,6 +19,8 @@ service cloud.firestore {
                      request.auth.uid in resource.data.participants;
       allow create: if request.auth != null;
       allow update: if request.auth != null && 
+                      request.auth.uid in resource.data.participants;
+      allow delete: if request.auth != null &&
                        request.auth.uid in resource.data.participants;
       
       // Сообщения внутри чатов
@@ -27,6 +29,8 @@ service cloud.firestore {
                        request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
         allow create: if request.auth != null &&
                          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow delete: if request.auth != null &&
+                          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
       }
       
       // Индикатор печатания
