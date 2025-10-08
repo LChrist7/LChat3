@@ -242,32 +242,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 return deviceId;
             };
 
-            const createRingtone = () => {
-                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                const oscillator = audioContext.createOscillator();
-                const gainNode = audioContext.createGain();
-                
-                oscillator.connect(gainNode);
-                gainNode.connect(audioContext.destination);
-                
-                oscillator.frequency.value = 440;
-                gainNode.gain.value = 0.3;
-                
-                return { audioContext, oscillator, gainNode };
-            };
-
-            const playRingtone = () => {
-                if (!ringtoneRef.current) {
-                    ringtoneRef.current = createRingtone();
-                    ringtoneRef.current.oscillator.start();
-                }
-            };
-
+            const createRingtone = () => null;
+            const playRingtone = () => {};
             const stopRingtone = () => {
                 if (ringtoneRef.current) {
                     try {
-                        ringtoneRef.current.oscillator.stop();
-                        ringtoneRef.current.audioContext.close();
+                        ringtoneRef.current.audioContext?.close();
                     } catch (e) {}
                     ringtoneRef.current = null;
                 }
