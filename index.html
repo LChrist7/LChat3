@@ -1485,7 +1485,6 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         },
                         lastMessage: '',
                         lastMessageTime: serverTimestamp(),
-                        [`unreadCount.${otherUserId}`]: (selectedChat.unreadCount?.[otherUserId] || 0) + 1,
                         createdAt: serverTimestamp()
                     };
                     
