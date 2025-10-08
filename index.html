@@ -228,16 +228,18 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     return;
                 }
 
-                const state = {
-                    chatId: selectedChat?.id || null,
+                const state = Object.assign({
+                    chatId: selectedChat && selectedChat.id ? selectedChat.id : null,
                     isVisible: typeof document !== 'undefined' ? document.visibilityState === 'visible' : true,
-                    hasFocus: typeof document !== 'undefined' && typeof document.hasFocus === 'function' ? document.hasFocus() : true,
-                    ...overrides
-                };
+                    hasFocus: typeof document !== 'undefined' && typeof document.hasFocus === 'function' ? document.hasFocus() : true
+                }, overrides || {});
 
                 const postState = (sw) => {
+                    if (!sw || typeof sw.postMessage !== 'function') {
+                        return;
+                    }
                     try {
-                        sw?.postMessage({ type: 'CLIENT_STATE', state });
+                        sw.postMessage({ type: 'CLIENT_STATE', state });
                     } catch (error) {
                         console.warn('[App] Failed to post client state to SW:', error);
                     }
@@ -249,7 +251,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
                 navigator.serviceWorker.ready
                     .then(registration => {
-                        if (registration?.active) {
+                        if (registration && registration.active) {
                             postState(registration.active);
                         }
                     })
@@ -262,7 +264,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             };
 
             const scrollToBottom = () => {
-                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                if(messagesEndRef.current && messagesEndRef.current.scrollIntoView) messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
             };
 
             useEffect(() => {
@@ -2536,6 +2538,9 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
     </script>
 </body>
 </html>
+
+
+
 
 
 
