@@ -36,6 +36,30 @@ const buildNotificationOptions = ({ body, data = {}, tag }) => ({
   vibrate: [200, 100, 200]
 });
 
+const notificationHistory = new Map();
+const DEDUPE_TTL = 2000;
+const HISTORY_LIMIT = 200;
+
+const isDuplicate = key => {
+  if (!key) return false;
+  const now = Date.now();
+  const last = notificationHistory.get(key);
+  notificationHistory.set(key, now);
+
+  if (notificationHistory.size > HISTORY_LIMIT) {
+    for (const [storedKey, timestamp] of notificationHistory) {
+      if (now - timestamp > DEDUPE_TTL) {
+        notificationHistory.delete(storedKey);
+      }
+      if (notificationHistory.size <= HISTORY_LIMIT) {
+        break;
+      }
+    }
+  }
+
+  return typeof last === 'number' && now - last < DEDUPE_TTL;
+};
+
 const getTagFromData = data => {
   if (!data) return 'message-notification';
   if (data.messageId) return `message-${data.messageId}`;
@@ -52,6 +76,13 @@ const extractUrlFromPayload = payload => {
 
 const showNotification = ({ title, body, data = {} }) => {
   const tag = getTagFromData(data);
+  const key = tag || `${title}|${body}`;
+
+  if (isDuplicate(key)) {
+    console.log('[SW] Skip duplicate notification', key);
+    return Promise.resolve();
+  }
+
   const options = buildNotificationOptions({ body, data, tag });
   return self.registration.showNotification(title || 'Сообщение', options);
 };
@@ -157,13 +188,6 @@ self.addEventListener('fetch', event => {
 });
 
 // Messaging handlers -------------------------------------------------------
-if (messaging) {
-  messaging.onBackgroundMessage(payload => {
-    console.log('[SW] onBackgroundMessage', payload);
-    return showNotificationFromPayload(payload);
-  });
-}
-
 self.addEventListener('push', event => {
   if (!event.data) return;
 

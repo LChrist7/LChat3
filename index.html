@@ -1336,14 +1336,16 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                             type: 'NEW_MESSAGE',
                                             sender: senderLogin,
                                             text: notifText,
-                                            chatId: selectedChat.id
+                                            chatId: selectedChat.id,
+                                            messageId: change.doc.id,
+                                            url: `/chat/${selectedChat.id}`
                                         });
                                     } else {
                                         if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
                                             new Notification(senderLogin, {
                                                 body: notifText,
                                                 icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
-                                                tag: 'message-' + selectedChat.id
+                                                tag: 'message-' + change.doc.id
                                             });
                                         }
                                     }
