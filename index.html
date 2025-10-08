@@ -203,15 +203,11 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const [isMuted, setIsMuted] = useState(false);
             const [callDuration, setCallDuration] = useState(0);
             const [audioOutputs, setAudioOutputs] = useState([]);
-            const [selectedAudioOutputId, setSelectedAudioOutputId] = useState(() => {
-                if (typeof HTMLMediaElement !== 'undefined' && typeof HTMLMediaElement.prototype.setSinkId === 'function') {
-                    return 'communications';
-                }
-                return 'default';
-            });
+            const [selectedAudioOutputId, setSelectedAudioOutputId] = useState('default');
+            const [speakerPermissionState, setSpeakerPermissionState] = useState('unknown');
             const [audioRoutingError, setAudioRoutingError] = useState('');
             const EARPIECE_FALLBACK_MESSAGE = 'Не удалось перевести звук в разговорный динамик, используется динамик по умолчанию.';
-            
+
             const messageInputRef = useRef(null);
             const messagesEndRef = useRef(null);
             const mediaRecorderRef = useRef(null);
@@ -226,6 +222,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const callTimerRef = useRef(null);
             const ringtoneRef = useRef(null);
             const ringtoneAudioRef = useRef(null);
+            const lastAppliedSinkRef = useRef(null);
 
             const isIOS = () => {
                 return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
@@ -341,6 +338,39 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 return typeof HTMLMediaElement.prototype.setSinkId === 'function';
             }, []);
 
+            useEffect(() => {
+                if (!navigator?.permissions || !navigator.permissions.query) {
+                    return;
+                }
+
+                let permissionStatus = null;
+                let isMounted = true;
+
+                navigator.permissions.query({ name: 'speaker-selection' })
+                    .then((status) => {
+                        if (!isMounted) {
+                            return;
+                        }
+
+                        permissionStatus = status;
+                        setSpeakerPermissionState(status.state);
+
+                        status.onchange = () => {
+                            setSpeakerPermissionState(status.state);
+                        };
+                    })
+                    .catch((error) => {
+                        console.warn('Не удалось получить статус разрешения на выбор динамика:', error);
+                    });
+
+                return () => {
+                    isMounted = false;
+                    if (permissionStatus) {
+                        permissionStatus.onchange = null;
+                    }
+                };
+            }, []);
+
             const refreshAudioOutputs = useCallback(async () => {
                 if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
                     return;
@@ -355,7 +385,61 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 }
             }, []);
 
-            const applyAudioOutput = useCallback(async (sinkId) => {
+            const ensureSpeakerPermission = useCallback(async () => {
+                if (!supportsSetSinkId) {
+                    return { granted: false };
+                }
+
+                if (speakerPermissionState === 'granted') {
+                    return { granted: true };
+                }
+
+                if (!navigator?.mediaDevices) {
+                    setAudioRoutingError('Браузер не предоставляет доступ к выбору устройства вывода.');
+                    return { granted: false };
+                }
+
+                if (navigator.permissions?.query && speakerPermissionState === 'denied') {
+                    setAudioRoutingError('Нет разрешения на выбор устройства вывода. Разрешите доступ в настройках браузера.');
+                    return { granted: false };
+                }
+
+                if (navigator.mediaDevices.selectAudioOutput) {
+                    try {
+                        const device = await navigator.mediaDevices.selectAudioOutput();
+                        await refreshAudioOutputs();
+                        setSpeakerPermissionState('granted');
+                        setAudioRoutingError('');
+                        return { granted: true, deviceId: device?.deviceId || null };
+                    } catch (error) {
+                        if (error?.name === 'AbortError') {
+                            console.log('Выбор устройства вывода отменён пользователем');
+                        } else if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+                            setSpeakerPermissionState('denied');
+                            setAudioRoutingError('Нет разрешения на выбор устройства вывода. Разрешите доступ в настройках браузера.');
+                        } else {
+                            setAudioRoutingError('Не удалось запросить выбор устройства вывода звука.');
+                        }
+
+                        return { granted: false };
+                    }
+                }
+
+                setAudioRoutingError('Ваш браузер требует системный выбор устройства вывода. Используйте меню устройства.');
+                return { granted: false };
+            }, [supportsSetSinkId, speakerPermissionState, refreshAudioOutputs]);
+
+            const applyAudioOutput = useCallback(async (sinkId, options = {}) => {
+                if (!sinkId) {
+                    return;
+                }
+
+                const { force = false, requestPermission = false } = options;
+
+                if (!force && lastAppliedSinkRef.current === sinkId) {
+                    return;
+                }
+
                 const targets = [remoteAudioRef.current, ringtoneAudioRef.current].filter(Boolean);
                 if (targets.length === 0) {
                     return;
@@ -363,9 +447,23 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
                 if (!supportsSetSinkId) {
                     if (sinkId === 'communications') {
-                        setAudioRoutingError('Ваш браузер не позволяет перевести звук в разговорный динамик напрямую. Используйте системное меню ниже, чтобы выбрать нужное устройство.');
+                        setAudioRoutingError('Браузер не поддерживает перевод звука в разговорный динамик напрямую. Используйте системное меню устройства.');
+                    } else if (sinkId === 'default') {
+                        lastAppliedSinkRef.current = 'default';
                     }
                     return;
+                }
+
+                if (sinkId === 'communications') {
+                    if (requestPermission) {
+                        const { granted } = await ensureSpeakerPermission();
+                        if (!granted) {
+                            return;
+                        }
+                    } else if (speakerPermissionState !== 'granted') {
+                        console.log('🚫 Нет разрешения на использование разговорного динамика, пропускаем автоматическое применение.');
+                        return;
+                    }
                 }
 
                 let hadError = false;
@@ -375,29 +473,40 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         console.log(`🔊 Аудио переключено на устройство: ${sinkId}`);
                     } catch (error) {
                         console.warn(`⚠️ Не удалось переключить аудио на ${sinkId}:`, error);
-                        if (sinkId === 'communications') {
+
+                        if (error?.name === 'SecurityError' || error?.name === 'NotAllowedError') {
+                            setSpeakerPermissionState((current) => (current === 'denied' ? 'denied' : 'prompt'));
+                            if (sinkId === 'communications') {
+                                setAudioRoutingError('Нет доступа к разговорному динамику. Разрешите использование динамика или выберите устройство вручную.');
+                            } else {
+                                setAudioRoutingError('Нет доступа к выбранному устройству вывода. Разрешите использование динамиков в настройках.');
+                            }
+                        } else if (sinkId === 'communications') {
                             setAudioRoutingError(EARPIECE_FALLBACK_MESSAGE);
-                            setSelectedAudioOutputId('default');
                         } else {
                             setAudioRoutingError('Не удалось переключить устройство вывода звука.');
                         }
+
                         hadError = true;
                     }
                 }));
 
                 if (!hadError) {
+                    lastAppliedSinkRef.current = sinkId;
                     setAudioRoutingError('');
                 }
-            }, [supportsSetSinkId]);
+            }, [supportsSetSinkId, ensureSpeakerPermission, speakerPermissionState]);
 
             const handleRemoteAudioPlaybackStart = useCallback(async () => {
                 await refreshAudioOutputs();
-                await applyAudioOutput(selectedAudioOutputId);
+                await applyAudioOutput(selectedAudioOutputId, { force: true });
             }, [refreshAudioOutputs, applyAudioOutput, selectedAudioOutputId]);
 
-            const handleAudioOutputChange = (event) => {
+            const handleAudioOutputChange = async (event) => {
+                const newSinkId = event.target.value;
                 setAudioRoutingError('');
-                setSelectedAudioOutputId(event.target.value);
+                setSelectedAudioOutputId(newSinkId);
+                await applyAudioOutput(newSinkId, { force: true, requestPermission: newSinkId === 'communications' });
             };
 
             const openSystemAudioPicker = useCallback(async () => {
@@ -408,11 +517,14 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
                 try {
                     const device = await navigator.mediaDevices.selectAudioOutput();
+                    await refreshAudioOutputs();
+                    setSpeakerPermissionState('granted');
                     if (device && device.deviceId) {
                         setSelectedAudioOutputId(device.deviceId);
                         const matched = audioOutputs.find(output => output.deviceId === device.deviceId);
-                        if (matched?.label) {
-                            setAudioRoutingError(`Системой выбран вывод: ${matched.label}`);
+                        const label = device?.label || matched?.label;
+                        if (label) {
+                            setAudioRoutingError(`Системой выбран вывод: ${label}`);
                         } else {
                             setAudioRoutingError('Системой выбрано устройство вывода.');
                         }
@@ -425,7 +537,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     console.error('Ошибка выбора устройства вывода:', error);
                     setAudioRoutingError('Не удалось выбрать устройство вывода звука.');
                 }
-            }, [supportsNativeAudioPicker, audioOutputs]);
+            }, [supportsNativeAudioPicker, audioOutputs, refreshAudioOutputs]);
 
             const audioOutputOptions = useMemo(() => {
                 const baseOptions = supportsSetSinkId
@@ -514,6 +626,12 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             useEffect(() => {
                 applyAudioOutput(selectedAudioOutputId);
             }, [selectedAudioOutputId, applyAudioOutput]);
+
+            useEffect(() => {
+                if (speakerPermissionState === 'granted' && selectedAudioOutputId === 'communications') {
+                    applyAudioOutput('communications', { force: true });
+                }
+            }, [speakerPermissionState, selectedAudioOutputId, applyAudioOutput]);
 
             useEffect(() => {
                 if (activeCall) {
@@ -1984,6 +2102,17 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                                             </option>
                                                         ))}
                                                     </select>
+                                                )}
+                                                {supportsSetSinkId && selectedAudioOutputId === 'communications' && speakerPermissionState !== 'granted' && (
+                                                    <button
+                                                        onClick={async () => {
+                                                            setAudioRoutingError('');
+                                                            await applyAudioOutput('communications', { force: true, requestPermission: true });
+                                                        }}
+                                                        className="w-full bg-white bg-opacity-20 hover:bg-opacity-30 text-white text-sm font-medium rounded-xl py-3 transition-colors backdrop-blur"
+                                                    >
+                                                        Разрешить вывод в разговорный динамик
+                                                    </button>
                                                 )}
                                                 {supportsNativeAudioPicker && (
                                                     <button
