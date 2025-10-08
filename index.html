@@ -222,6 +222,39 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const ringtoneRef = useRef(null);
             const isSpeakerOnRef = useRef(false);
 
+            const sendClientState = useCallback((overrides = {}) => {
+                if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+                    return;
+                }
+
+                const state = {
+                    chatId: selectedChat?.id || null,
+                    isVisible: typeof document !== 'undefined' ? document.visibilityState === 'visible' : true,
+                    hasFocus: typeof document !== 'undefined' && typeof document.hasFocus === 'function' ? document.hasFocus() : true,
+                    ...overrides
+                };
+
+                const postState = (sw) => {
+                    try {
+                        sw?.postMessage({ type: 'CLIENT_STATE', state });
+                    } catch (error) {
+                        console.warn('[App] Failed to post client state to SW:', error);
+                    }
+                };
+
+                if (navigator.serviceWorker.controller) {
+                    postState(navigator.serviceWorker.controller);
+                }
+
+                navigator.serviceWorker.ready
+                    .then(registration => {
+                        if (registration?.active) {
+                            postState(registration.active);
+                        }
+                    })
+                    .catch(() => {});
+            }, [selectedChat]);
+
             const isIOS = () => {
                 return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
                        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -234,6 +267,26 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             useEffect(() => {
                 scrollToBottom();
             }, [messages]);
+
+            useEffect(() => {
+                sendClientState();
+            }, [sendClientState]);
+
+            useEffect(() => {
+                const handleUpdate = () => sendClientState();
+
+                document.addEventListener('visibilitychange', handleUpdate);
+                window.addEventListener('focus', handleUpdate);
+                window.addEventListener('blur', handleUpdate);
+                window.addEventListener('beforeunload', handleUpdate);
+
+                return () => {
+                    document.removeEventListener('visibilitychange', handleUpdate);
+                    window.removeEventListener('focus', handleUpdate);
+                    window.removeEventListener('blur', handleUpdate);
+                    window.removeEventListener('beforeunload', handleUpdate);
+                };
+            }, [sendClientState]);
 
             const getDeviceId = () => {
                 let deviceId = localStorage.getItem('deviceId');
@@ -1302,65 +1355,18 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 const { collection, query, orderBy, onSnapshot } = window.firebaseFunctions;
                 const messagesRef = collection(window.firebaseDb, 'chats', selectedChat.id, 'messages');
                 const q = query(messagesRef, orderBy('timestamp', 'asc'));
-
-                let isFirstLoad = true;
                 const unsubscribe = onSnapshot(q, (snapshot) => {
                     const messagesData = snapshot.docs.map(doc => ({
                         id: doc.id,
                         ...doc.data()
                     }));
                     
-                    if (!isFirstLoad && notificationsEnabled) {
-                        snapshot.docChanges().forEach(change => {
-                            if (change.type === 'added') {
-                                const message = change.doc.data();
-                                if (message.senderId !== user.uid) {
-                                    const senderLogin = selectedChat.participantsData[message.senderId];
-                                    const notifText = message.type === 'audio' ? '🎤 Голосовое сообщение' : message.text;
-
-                                    const shouldShowNotification = () => {
-                                        if (typeof document === 'undefined') return true;
-                                        if (document.visibilityState === 'hidden') return true;
-                                        if (typeof document.hasFocus === 'function') {
-                                            return !document.hasFocus();
-                                        }
-                                        return false;
-                                    };
-
-                                    if (!shouldShowNotification()) {
-                                        return;
-                                    }
-
-                                    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-                                        navigator.serviceWorker.controller.postMessage({
-                                            type: 'NEW_MESSAGE',
-                                            sender: senderLogin,
-                                            text: notifText,
-                                            chatId: selectedChat.id,
-                                            messageId: change.doc.id,
-                                            url: `/chat/${selectedChat.id}`
-                                        });
-                                    } else {
-                                        if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-                                            new Notification(senderLogin, {
-                                                body: notifText,
-                                                icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%234F46E5"/%3E%3Ctext x="50" y="70" font-size="60" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="bold"%3EM%3C/text%3E%3C/svg%3E',
-                                                tag: 'message-' + change.doc.id
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                    
                     setMessages(messagesData);
-                    isFirstLoad = false;
                     markMessagesAsRead(selectedChat.id);
                 });
 
                 return () => unsubscribe();
-            }, [selectedChat, notificationsEnabled, user]);
+            }, [selectedChat, user]);
 
             useEffect(() => {
                 if (!selectedChat) return;
@@ -2508,6 +2514,11 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
     </script>
 </body>
 </html>
+
+
+
+
+
 
 
 

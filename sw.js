@@ -27,7 +27,7 @@ try {
 }
 
 const buildNotificationOptions = ({ body, data = {}, tag }) => ({
-  body: body || 'У вас новое сообщение',
+  body: body || 'You have a new message',
   icon: DEFAULT_ICON,
   badge: DEFAULT_ICON,
   tag: tag || 'message-notification',
@@ -39,6 +39,31 @@ const buildNotificationOptions = ({ body, data = {}, tag }) => ({
 const notificationHistory = new Map();
 const DEDUPE_TTL = 2000;
 const HISTORY_LIMIT = 200;
+const clientState = new Map();
+const CLIENT_STATE_TTL = 60000;
+
+const updateClientState = (clientId, partialState = {}) => {
+  if (!clientId) return;
+
+  const prev = clientState.get(clientId) || {};
+  const next = {
+    chatId: partialState.chatId ?? prev.chatId ?? null,
+    isVisible: typeof partialState.isVisible === 'boolean' ? partialState.isVisible : (prev.isVisible ?? false),
+    hasFocus: typeof partialState.hasFocus === 'boolean' ? partialState.hasFocus : (prev.hasFocus ?? false),
+    timestamp: Date.now()
+  };
+
+  clientState.set(clientId, next);
+};
+
+const cleanupClientState = () => {
+  const now = Date.now();
+  for (const [clientId, state] of clientState) {
+    if (!state || now - state.timestamp > CLIENT_STATE_TTL) {
+      clientState.delete(clientId);
+    }
+  }
+};
 
 const isDuplicate = key => {
   if (!key) return false;
@@ -84,15 +109,23 @@ const showNotification = ({ title, body, data = {} }) => {
   }
 
   const options = buildNotificationOptions({ body, data, tag });
-  return self.registration.showNotification(title || 'Сообщение', options);
+  return self.registration.showNotification(title || 'Notification', options);
 };
 
 const showNotificationFromPayload = payload => {
   const title =
-    payload?.notification?.title || payload?.data?.title || payload?.data?.sender || 'Новое сообщение';
+    payload?.notification?.title || payload?.data?.title || payload?.data?.sender || 'New message';
   const body =
-    payload?.notification?.body || payload?.data?.body || payload?.data?.text || 'У вас новое сообщение';
+    payload?.notification?.body || payload?.data?.body || payload?.data?.text || 'You have a new message';
   const data = { ...(payload?.data || {}) };
+
+  if (!data.messageId) {
+    data.messageId = data.messageId || data.id || data.mid || payload?.messageId || payload?.data?.messageID || payload?.data?.msgId;
+  }
+
+  if (!data.chatId) {
+    data.chatId = data.chatId || data.chatID || data.threadId || data.roomId;
+  }
 
   if (!data.url) {
     data.url = extractUrlFromPayload(payload);
@@ -188,6 +221,31 @@ self.addEventListener('fetch', event => {
 });
 
 // Messaging handlers -------------------------------------------------------
+const shouldSuppressForActiveClient = async (data = {}) => {
+  cleanupClientState();
+
+  const chatId = data.chatId || data.chatID || data.threadId || data.roomId;
+  if (!chatId) return false;
+
+  const clientList = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const now = Date.now();
+
+  for (const client of clientList) {
+    const state = clientState.get(client.id);
+    if (!state) continue;
+    if (now - state.timestamp > CLIENT_STATE_TTL) {
+      clientState.delete(client.id);
+      continue;
+    }
+
+    if (state.chatId === chatId && state.isVisible && state.hasFocus) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 self.addEventListener('push', event => {
   if (!event.data) return;
 
@@ -198,29 +256,31 @@ self.addEventListener('push', event => {
     console.warn('[SW] push payload parse error', error);
   }
 
-  event.waitUntil(showNotificationFromPayload(payload));
+  event.waitUntil((async () => {
+    try {
+      const suppress = await shouldSuppressForActiveClient(payload.data || {});
+      if (suppress) {
+        console.log('[SW] Notification suppressed for active chat', payload.data?.chatId);
+        return;
+      }
+    } catch (error) {
+      console.warn('[SW] Failed to evaluate suppression logic:', error);
+    }
+
+    await showNotificationFromPayload(payload);
+  })());
 });
 
 self.addEventListener('message', event => {
+  const clientId = event.source && event.source.id;
   const data = event.data || {};
 
-  if (data.type === 'NEW_MESSAGE') {
-    const { sender, text, chatId, messageId, url } = data;
-    const notificationData = {
-      title: sender || 'Новое сообщение',
-      body: text || 'У вас новое сообщение',
-      data: {
-        chatId,
-        messageId,
-        url: url || (chatId ? `/chat/${chatId}` : '/'),
-        tag: messageId ? `message-${messageId}` : chatId ? `chat-${chatId}` : undefined
-      }
-    };
+  if (!clientId || !data || !data.type) return;
 
-    event.waitUntil(showNotification(notificationData));
+  if (data.type === 'CLIENT_STATE') {
+    updateClientState(clientId, data.state || {});
   }
 });
-
 self.addEventListener('notificationclick', event => {
   event.notification.close();
   const targetUrl = event.notification?.data?.url || '/';
@@ -242,3 +302,8 @@ self.addEventListener('notificationclick', event => {
     })
   );
 });
+
+
+
+
+
