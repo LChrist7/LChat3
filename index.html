@@ -225,6 +225,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const remoteAudioRef = useRef(null);
             const callTimerRef = useRef(null);
             const ringtoneRef = useRef(null);
+            const ringtoneAudioRef = useRef(null);
 
             const isIOS = () => {
                 return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
@@ -248,25 +249,51 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                 return deviceId;
             };
 
-            const createRingtone = () => {
+            const connectRingtoneToElement = useCallback((ringtone) => {
+                const audioEl = ringtoneAudioRef.current;
+                if (!audioEl || !ringtone) {
+                    return;
+                }
+
+                const { destination } = ringtone;
+                try {
+                    audioEl.srcObject = destination.stream;
+                    audioEl.muted = false;
+                    audioEl.loop = true;
+                    audioEl.play().catch((error) => {
+                        console.warn('Не удалось автоматически воспроизвести гудок:', error);
+                    });
+                } catch (error) {
+                    console.warn('Ошибка подключения гудка к audio элементу:', error);
+                }
+            }, []);
+
+            const createRingtone = useCallback(() => {
                 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const oscillator = audioContext.createOscillator();
                 const gainNode = audioContext.createGain();
-                
+                const destination = audioContext.createMediaStreamDestination();
+
                 oscillator.connect(gainNode);
-                gainNode.connect(audioContext.destination);
-                
+                gainNode.connect(destination);
+
+                oscillator.type = 'sine';
                 oscillator.frequency.value = 440;
-                gainNode.gain.value = 0.3;
-                
-                return { audioContext, oscillator, gainNode };
-            };
+                gainNode.gain.value = 0.2;
+
+                const ringtone = { audioContext, oscillator, gainNode, destination };
+                connectRingtoneToElement(ringtone);
+                return ringtone;
+            }, [connectRingtoneToElement]);
 
             const playRingtone = () => {
                 if (!ringtoneRef.current) {
                     ringtoneRef.current = createRingtone();
                     ringtoneRef.current.oscillator.start();
+                } else {
+                    connectRingtoneToElement(ringtoneRef.current);
                 }
+                applyAudioOutput(selectedAudioOutputId);
             };
 
             const stopRingtone = () => {
@@ -277,7 +304,21 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     } catch (e) {}
                     ringtoneRef.current = null;
                 }
+                if (ringtoneAudioRef.current) {
+                    try {
+                        ringtoneAudioRef.current.pause();
+                    } catch (e) {}
+                    ringtoneAudioRef.current.currentTime = 0;
+                    ringtoneAudioRef.current.srcObject = null;
+                    ringtoneAudioRef.current.muted = true;
+                }
             };
+
+            useEffect(() => {
+                if (ringtoneRef.current) {
+                    connectRingtoneToElement(ringtoneRef.current);
+                }
+            }, [connectRingtoneToElement]);
 
             const iceServers = {
                 iceServers: [
@@ -315,8 +356,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             }, []);
 
             const applyAudioOutput = useCallback(async (sinkId) => {
-                const audioEl = remoteAudioRef.current;
-                if (!audioEl) {
+                const targets = [remoteAudioRef.current, ringtoneAudioRef.current].filter(Boolean);
+                if (targets.length === 0) {
                     return;
                 }
 
@@ -327,23 +368,25 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     return;
                 }
 
-                try {
-                    await audioEl.setSinkId(sinkId);
-                    setAudioRoutingError((prev) => {
-                        if (sinkId === 'default' && prev === EARPIECE_FALLBACK_MESSAGE) {
-                            return prev;
+                let hadError = false;
+                await Promise.all(targets.map(async (audioEl) => {
+                    try {
+                        await audioEl.setSinkId(sinkId);
+                        console.log(`🔊 Аудио переключено на устройство: ${sinkId}`);
+                    } catch (error) {
+                        console.warn(`⚠️ Не удалось переключить аудио на ${sinkId}:`, error);
+                        if (sinkId === 'communications') {
+                            setAudioRoutingError(EARPIECE_FALLBACK_MESSAGE);
+                            setSelectedAudioOutputId('default');
+                        } else {
+                            setAudioRoutingError('Не удалось переключить устройство вывода звука.');
                         }
-                        return '';
-                    });
-                    console.log(`🔊 Аудио переключено на устройство: ${sinkId}`);
-                } catch (error) {
-                    console.warn(`⚠️ Не удалось переключить аудио на ${sinkId}:`, error);
-                    if (sinkId === 'communications') {
-                        setAudioRoutingError(EARPIECE_FALLBACK_MESSAGE);
-                        setSelectedAudioOutputId('default');
-                    } else {
-                        setAudioRoutingError('Не удалось переключить устройство вывода звука.');
+                        hadError = true;
                     }
+                }));
+
+                if (!hadError) {
+                    setAudioRoutingError('');
                 }
             }, [supportsSetSinkId]);
 
@@ -1846,14 +1889,21 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             if (user) {
                 return (
 					<React.Fragment>
-						{/* Audio элемент для звонков - всегда в DOM */}
-						<audio 
-							ref={remoteAudioRef} 
-							autoPlay 
-							playsInline
-							muted={false}
-							style={{ display: 'none' }}
-						/>
+                                                {/* Audio элементы для звонков - всегда в DOM */}
+                                                <audio
+                                                        ref={remoteAudioRef}
+                                                        autoPlay
+                                                        playsInline
+                                                        muted={false}
+                                                        style={{ display: 'none' }}
+                                                />
+                                                <audio
+                                                        ref={ringtoneAudioRef}
+                                                        autoPlay
+                                                        playsInline
+                                                        muted
+                                                        style={{ display: 'none' }}
+                                                />
                         {incomingCall && (
                             <div className="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center z-50 p-4">
                                 <div className="bg-white rounded-3xl p-8 max-w-sm w-full text-center">
