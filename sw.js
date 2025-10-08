@@ -256,6 +256,34 @@ self.addEventListener('push', event => {
     console.warn('[SW] push payload parse error', error);
   }
 
+  if (payload.notification && !(payload.data && payload.data.forceManual === '1')) {
+    console.log('[SW] Skip manual notification (relying on FCM notification payload)');
+    return;
+  }
+
+  event.waitUntil((async () => {
+    try {
+      const suppress = await shouldSuppressForActiveClient(payload.data || {});
+      if (suppress) {
+        console.log('[SW] Notification suppressed for active chat', payload.data?.chatId);
+        return;
+      }
+    } catch (error) {
+      console.warn('[SW] Failed to evaluate suppression logic:', error);
+    }
+
+    await showNotificationFromPayload(payload);
+  })());
+});
+  if (!event.data) return;
+
+  let payload = {};
+  try {
+    payload = event.data.json() || {};
+  } catch (error) {
+    console.warn('[SW] push payload parse error', error);
+  }
+
   event.waitUntil((async () => {
     try {
       const suppress = await shouldSuppressForActiveClient(payload.data || {});
