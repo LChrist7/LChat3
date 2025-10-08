@@ -206,6 +206,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const [isMuted, setIsMuted] = useState(false);
             const [callDuration, setCallDuration] = useState(0);
             const [isSpeakerOn, setIsSpeakerOn] = useState(false);
+            const [swStatus, setSwStatus] = useState('SW: waiting…');
             
             const messageInputRef = useRef(null);
             const messagesEndRef = useRef(null);
@@ -810,10 +811,14 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 					navigator.serviceWorker.register('/sw.js')
 						.then(registration => {
 							console.log('[App] Service Worker registered', registration.scope);
+							setSwStatus(`SW registered: ${registration.scope}`);
 						})
 						.catch(error => {
 							console.error('[App] Service Worker registration failed:', error);
+							setSwStatus(`SW register error: ${error.message}`);
 						});
+				} else {
+					setSwStatus('SW unsupported');
 				}
 
 				if ('Notification' in window) {
@@ -1773,6 +1778,23 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 							muted={false}
 							style={{ display: 'none' }}
 						/>
+                        {swStatus && (
+                            <div
+                                style={{
+                                    position: 'fixed',
+                                    bottom: 16,
+                                    left: 16,
+                                    background: 'rgba(0, 0, 0, 0.72)',
+                                    color: '#fff',
+                                    padding: '8px 12px',
+                                    borderRadius: '8px',
+                                    fontSize: '12px',
+                                    zIndex: 9999
+                                }}
+                            >
+                                {swStatus}
+                            </div>
+                        )}
                         {incomingCall && (
                             <div className="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center z-50 p-4">
                                 <div className="bg-white rounded-3xl p-8 max-w-sm w-full text-center">
