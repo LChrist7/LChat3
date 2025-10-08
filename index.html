@@ -219,6 +219,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const localStreamRef = useRef(null);
             const remoteStreamRef = useRef(null);
             const remoteAudioRef = useRef(null);
+            const remoteAudioChainRef = useRef(null);
             const callTimerRef = useRef(null);
             const ringtoneRef = useRef(null);
             const ringtoneAudioRef = useRef(null);
@@ -316,6 +317,35 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     connectRingtoneToElement(ringtoneRef.current);
                 }
             }, [connectRingtoneToElement]);
+
+            const cleanupRemoteAudioChain = useCallback((options = {}) => {
+                const { clearElement = false } = options;
+                const chain = remoteAudioChainRef.current;
+
+                if (chain?.context && typeof chain.context.close === 'function') {
+                    try {
+                        const result = chain.context.close();
+                        if (result && typeof result.catch === 'function') {
+                            result.catch((error) => {
+                                console.warn('Ошибка закрытия аудио-контекста удалённого потока:', error);
+                            });
+                        }
+                    } catch (error) {
+                        console.warn('Ошибка закрытия аудио-контекста удалённого потока:', error);
+                    }
+                }
+
+                remoteAudioChainRef.current = null;
+
+                if (clearElement && remoteAudioRef.current) {
+                    try {
+                        remoteAudioRef.current.pause();
+                        remoteAudioRef.current.srcObject = null;
+                    } catch (error) {
+                        console.warn('Не удалось очистить audio элемент удалённого потока:', error);
+                    }
+                }
+            }, []);
 
             const iceServers = {
                 iceServers: [
@@ -499,8 +529,88 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
             const handleRemoteAudioPlaybackStart = useCallback(async () => {
                 await refreshAudioOutputs();
-                await applyAudioOutput(selectedAudioOutputId, { force: true });
+                await applyAudioOutput(selectedAudioOutputId, {
+                    force: true,
+                    requestPermission: selectedAudioOutputId === 'communications'
+                });
             }, [refreshAudioOutputs, applyAudioOutput, selectedAudioOutputId]);
+
+            const attachRemoteStream = useCallback(async (stream) => {
+                remoteStreamRef.current = stream;
+
+                const audioEl = remoteAudioRef.current;
+                if (!audioEl) {
+                    console.error('❌ Audio элемент НЕ найден!');
+                    return;
+                }
+
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                let outputStream = stream;
+
+                if (AudioContextClass) {
+                    try {
+                        cleanupRemoteAudioChain();
+
+                        const audioContext = new AudioContextClass();
+                        if (audioContext.state === 'suspended') {
+                            try {
+                                await audioContext.resume();
+                            } catch (resumeError) {
+                                console.warn('⚠️ Не удалось активировать аудио-контекст перед моно-преобразованием:', resumeError);
+                            }
+                        }
+                        const source = audioContext.createMediaStreamSource(stream);
+                        const splitter = audioContext.createChannelSplitter(2);
+                        const merger = audioContext.createChannelMerger(1);
+
+                        const leftGain = audioContext.createGain();
+                        leftGain.gain.value = 0.5;
+                        splitter.connect(leftGain, 0);
+                        leftGain.connect(merger, 0, 0);
+
+                        if (splitter.numberOfOutputs > 1) {
+                            const rightGain = audioContext.createGain();
+                            rightGain.gain.value = 0.5;
+                            splitter.connect(rightGain, 1);
+                            rightGain.connect(merger, 0, 0);
+                        }
+
+                        const destination = audioContext.createMediaStreamDestination();
+                        merger.connect(destination);
+
+                        outputStream = destination.stream;
+                        remoteAudioChainRef.current = {
+                            context: audioContext,
+                            nodes: { source, splitter, merger }
+                        };
+
+                        console.log('🎧 Удалённый поток переведён в моно через Web Audio.');
+                    } catch (error) {
+                        console.warn('⚠️ Не удалось сконвертировать удалённый поток в моно:', error);
+                        cleanupRemoteAudioChain();
+                        outputStream = stream;
+                    }
+                } else {
+                    cleanupRemoteAudioChain();
+                }
+
+                try {
+                    audioEl.srcObject = outputStream;
+                    console.log('✅ Audio элемент найден и подключён к потоку');
+                } catch (error) {
+                    console.error('❌ Не удалось установить поток в audio элемент:', error);
+                    return;
+                }
+
+                await handleRemoteAudioPlaybackStart();
+
+                try {
+                    await audioEl.play();
+                    console.log('✅ Воспроизведение удалённого аудио началось');
+                } catch (error) {
+                    console.error('❌ Ошибка воспроизведения удалённого аудио:', error);
+                }
+            }, [cleanupRemoteAudioChain, handleRemoteAudioPlaybackStart]);
 
             const handleAudioOutputChange = async (event) => {
                 const newSinkId = event.target.value;
@@ -756,31 +866,13 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 						}
 					};
                     
-					peerConnection.ontrack = (event) => {
-						console.log('✅ Получен удаленный стрим');
-						console.log('📊 Треков в стриме:', event.streams[0].getTracks().length);
-						console.log('📊 Аудио треков:', event.streams[0].getAudioTracks().length);
-						
-						remoteStreamRef.current = event.streams[0];
-						
-                                                if (remoteAudioRef.current) {
-                                                        console.log('✅ Audio элемент найден');
-                                                        remoteAudioRef.current.srcObject = event.streams[0];
-                                                        handleRemoteAudioPlaybackStart();
-                                                        remoteAudioRef.current.play()
-                                                                .then(() => {
-                                                                        console.log('✅ Воспроизведение началось');
-                                                                        console.log('📊 Громкость:', remoteAudioRef.current.volume);
-                                                                        console.log('🔇 Muted:', remoteAudioRef.current.muted);
-                                                                        handleRemoteAudioPlaybackStart();
-                                                                })
-                                                                .catch(err => {
-                                                                        console.error('❌ Ошибка воспроизведения:', err);
-								});
-						} else {
-							console.error('❌ Audio элемент НЕ найден!');
-						}
-					};
+                                        peerConnection.ontrack = (event) => {
+                                                console.log('✅ Получен удаленный стрим');
+                                                console.log('📊 Треков в стриме:', event.streams[0].getTracks().length);
+                                                console.log('📊 Аудио треков:', event.streams[0].getAudioTracks().length);
+
+                                                attachRemoteStream(event.streams[0]);
+                                        };
                     
 					const processedCandidates = new Set();
 					const candidatesUnsubscribe = onSnapshot(callRef, async (snapshot) => {
@@ -889,26 +981,8 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                                 console.log('📊 Треков в стриме:', event.streams[0].getTracks().length);
                                                 console.log('📊 Аудио треков:', event.streams[0].getAudioTracks().length);
 
-                                                remoteStreamRef.current = event.streams[0];
-
-                                                if (remoteAudioRef.current) {
-                                                        console.log('✅ Audio элемент найден');
-                                                        remoteAudioRef.current.srcObject = event.streams[0];
-                                                        handleRemoteAudioPlaybackStart();
-                                                        remoteAudioRef.current.play()
-                                                                .then(() => {
-                                                                        console.log('✅ Воспроизведение началось');
-                                                                        console.log('📊 Громкость:', remoteAudioRef.current.volume);
-                                                                        console.log('🔇 Muted:', remoteAudioRef.current.muted);
-                                                                        handleRemoteAudioPlaybackStart();
-                                                                })
-                                                                .catch(err => {
-                                                                        console.error('❌ Ошибка воспроизведения:', err);
-								});
-						} else {
-							console.error('❌ Audio элемент НЕ найден!');
-						}
-					};
+                                                attachRemoteStream(event.streams[0]);
+                                        };
                     
                     const { doc, getDoc, setDoc, updateDoc } = window.firebaseFunctions;
                     const callRef = doc(window.firebaseDb, 'calls', incomingCall.id);
@@ -1017,11 +1091,15 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
             const endCall = async () => {
                 try {
                     console.log('📞 Завершаем звонок');
-                    
+
                     stopRingtone();
-					
-					if (window.activeCallUnsubscribers && window.activeCallUnsubscribers.length > 0) {
-						console.log('🔌 Отписываемся от', window.activeCallUnsubscribers.length, 'подписок');
+
+                    cleanupRemoteAudioChain({ clearElement: true });
+                    remoteStreamRef.current = null;
+                    lastAppliedSinkRef.current = null;
+
+                                        if (window.activeCallUnsubscribers && window.activeCallUnsubscribers.length > 0) {
+                                                console.log('🔌 Отписываемся от', window.activeCallUnsubscribers.length, 'подписок');
 						window.activeCallUnsubscribers.forEach(unsub => {
 							try {
 								unsub();
@@ -1968,7 +2046,11 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     if (user) {
                         await removeFCMToken(user.uid);
                     }
-                    
+
+                    cleanupRemoteAudioChain({ clearElement: true });
+                    remoteStreamRef.current = null;
+                    lastAppliedSinkRef.current = null;
+
                     const { signOut } = window.firebaseFunctions;
                     await signOut(window.firebaseAuth);
                     setUser(null);
