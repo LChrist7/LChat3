@@ -1706,6 +1706,14 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     return;
                 }
 
+                if (file.size === 0) {
+                    setAttachmentError('Этот файл пустой. Выберите другой файл.');
+                    if (event.target) {
+                        event.target.value = '';
+                    }
+                    return;
+                }
+
                 if (file.size > MAX_ATTACHMENT_SIZE) {
                     setAttachmentError('Максимальный размер файла 5 МБ');
                     if (event.target) {
@@ -1842,6 +1850,10 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     let lastMessagePreview = trimmedMessage;
 
                     if (attachmentToSend) {
+                        if (attachmentToSend.size === 0) {
+                            throw new Error('Файл пустой, загрузка отменена');
+                        }
+
                         if (attachmentToSend.size > MAX_ATTACHMENT_SIZE) {
                             throw new Error('Максимальный размер вложения 5 МБ');
                         }
