@@ -2,15 +2,47 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
-    // Голосовые сообщения
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function chatDoc(chatId) {
+      return get(/databases/(default)/documents/chats/$(chatId));
+    }
+
+    function chatExists(chatId) {
+      return chatDoc(chatId).data != null;
+    }
+
+    function isChatParticipant(chatId) {
+      return isSignedIn() &&
+             chatExists(chatId) &&
+             request.auth.uid in chatDoc(chatId).data.participants;
+    }
+
     match /voice-messages/{chatId}/{fileName} {
-      // Разрешить загрузку только авторизованным пользователям
-      allow write: if request.auth != null &&
-                      request.resource.size < 10 * 1024 * 1024 &&
-                      request.resource.contentType.matches('audio/.*');
-      
-      // Разрешить чтение только авторизованным пользователям
-      allow read: if request.auth != null;
+      allow write: if isChatParticipant(chatId) &&
+                   request.resource.size <= 10 * 1024 * 1024 &&
+                   request.resource.contentType.matches('audio/.*');
+      allow read, delete: if isChatParticipant(chatId);
+    }
+
+    match /attachments/{chatId}/{fileName} {
+      allow write: if isChatParticipant(chatId) &&
+                   request.resource.size <= 5 * 1024 * 1024 &&
+                   (
+                     request.resource.contentType == null ||
+                     request.resource.contentType.matches('image/.*') ||
+                     request.resource.contentType.matches('video/.*') ||
+                     request.resource.contentType.matches('application/.*') ||
+                     request.resource.contentType.matches('text/.*')
+                   );
+      allow read, delete: if isChatParticipant(chatId);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

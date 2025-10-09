@@ -1,67 +1,139 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Пользователи
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function chatDoc(chatId) {
+      return get(/databases/$(database)/documents/chats/$(chatId));
+    }
+
+    function chatExists(chatId) {
+      return chatDoc(chatId).data != null;
+    }
+
+    function chatParticipants(chatId) {
+      return chatDoc(chatId).data.participants;
+    }
+
+    function isChatParticipant(chatId) {
+      return isSignedIn() &&
+             chatExists(chatId) &&
+             request.auth.uid in chatParticipants(chatId);
+    }
+
+    function allowedMessageType(data) {
+      return data.type in ['text', 'audio', 'image', 'video', 'file'];
+    }
+
+    function isAttachmentMessage(data) {
+      return data.type in ['image', 'video', 'file'];
+    }
+
+    function validAttachmentCreate(data) {
+      return data.fileName is string &&
+             data.fileType is string &&
+             data.fileSize is int &&
+             data.fileSize > 0 &&
+             data.fileSize <= 5 * 1024 * 1024 &&
+             data.storagePath is string &&
+             data.downloadUrl is string &&
+             data.expiresAt is timestamp &&
+             data.expiresAt > request.time &&
+             data.expiresAt <= request.time + duration.value(5, 'd') &&
+             data.downloadedBy is list &&
+             data.downloadedBy.size() == 0 &&
+             data.fileDeleted == false;
+    }
+
+    function validAttachmentUpdate(oldData, newData, chatId) {
+      return newData.fileName == oldData.fileName &&
+             newData.fileType == oldData.fileType &&
+             newData.fileSize == oldData.fileSize &&
+             newData.expiresAt == oldData.expiresAt &&
+             newData.senderId == oldData.senderId &&
+             newData.timestamp == oldData.timestamp &&
+             newData.type == oldData.type &&
+             newData.caption == oldData.caption &&
+             (newData.storagePath == oldData.storagePath || newData.storagePath == null) &&
+             (newData.downloadUrl == oldData.downloadUrl || newData.downloadUrl == null) &&
+             (newData.fileDeleted == oldData.fileDeleted || (!oldData.fileDeleted && newData.fileDeleted == true)) &&
+             (!newData.fileDeleted || (newData.downloadUrl == null && newData.storagePath == null)) &&
+             (!newData.cleanupReason || newData.cleanupReason in ['downloaded', 'expired']) &&
+             (!oldData.cleanupReason || newData.cleanupReason == oldData.cleanupReason || newData.cleanupReason in ['downloaded', 'expired']) &&
+             (!oldData.deletedAt || newData.deletedAt == oldData.deletedAt || newData.deletedAt is timestamp) &&
+             (!newData.deletedAt || newData.deletedAt == oldData.deletedAt || newData.deletedAt is timestamp) &&
+             newData.downloadedBy is list &&
+             newData.downloadedBy.hasOnly(chatParticipants(chatId)) &&
+             oldData.downloadedBy.hasOnly(newData.downloadedBy) &&
+             newData.downloadedBy.size() <= oldData.downloadedBy.size() + 1;
+    }
+
+    function validTextMessage(data) {
+      return data.type != 'text' ||
+             (data.text is string && data.text.size() <= 4000);
+    }
+
+    function validAudioMessage(data) {
+      return data.type != 'audio' ||
+             (data.audioUrl is string && data.duration is int);
+    }
+
     match /users/{userId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == userId;
-      
-      // FCM токены пользователя
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.auth.uid == userId;
+
       match /tokens/{tokenId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
-        allow delete: if request.auth != null && request.auth.uid == userId;
+        allow read, write, delete: if isSignedIn() && request.auth.uid == userId;
       }
     }
-    
-    // Чаты
+
     match /chats/{chatId} {
-      allow read: if request.auth != null && 
-                     request.auth.uid in resource.data.participants;
-      allow create: if request.auth != null;
-      allow update: if request.auth != null && 
-                      request.auth.uid in resource.data.participants;
-      allow delete: if request.auth != null &&
-                       request.auth.uid in resource.data.participants;
-      
-      // Сообщения внутри чатов
+      allow read, update, delete: if isChatParticipant(chatId);
+      allow create: if isSignedIn();
+
       match /messages/{messageId} {
-        allow read: if request.auth != null &&
-                       request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
-        allow create: if request.auth != null &&
-                         request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
-        allow delete: if request.auth != null &&
-                          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow read: if isChatParticipant(chatId);
+
+        allow create: if isChatParticipant(chatId) &&
+                        request.resource.data.senderId == request.auth.uid &&
+                        request.resource.data.timestamp is timestamp &&
+                        allowedMessageType(request.resource.data) &&
+                        validTextMessage(request.resource.data) &&
+                        validAudioMessage(request.resource.data) &&
+                        (!isAttachmentMessage(request.resource.data) || validAttachmentCreate(request.resource.data));
+
+        allow update: if isChatParticipant(chatId) &&
+                        request.resource.data.senderId == resource.data.senderId &&
+                        request.resource.data.type == resource.data.type &&
+                        request.resource.data.timestamp == resource.data.timestamp &&
+                        allowedMessageType(resource.data) &&
+                        (
+                          (isAttachmentMessage(resource.data) && validAttachmentUpdate(resource.data, request.resource.data, chatId)) ||
+                          (!isAttachmentMessage(resource.data) && request.resource.data == resource.data)
+                        );
+
+        allow delete: if isChatParticipant(chatId);
       }
-      
-      // Индикатор печатания
+
       match /typing/{statusId} {
-        allow read: if request.auth != null &&
-                       request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
-        allow write: if request.auth != null &&
-                        request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow read, write: if isChatParticipant(chatId);
       }
     }
-    
-    // 📞 ЗВОНКИ (НОВОЕ)
+
     match /calls/{callId} {
-      // Читать могут только участники звонка
-      allow read: if request.auth != null &&
-                     (request.auth.uid == resource.data.callerId ||
-                      request.auth.uid == resource.data.recipientId);
-      
-      // Создавать может только звонящий
-      allow create: if request.auth != null &&
-                       request.auth.uid == request.resource.data.callerId;
-      
-      // Обновлять могут оба участника
-      allow update: if request.auth != null &&
-                       (request.auth.uid == resource.data.callerId ||
-                        request.auth.uid == resource.data.recipientId);
-      
-      // Удалять может любой участник
-      allow delete: if request.auth != null &&
-                       (request.auth.uid == resource.data.callerId ||
-                        request.auth.uid == resource.data.recipientId);
+      allow read, delete: if isSignedIn() &&
+                            (request.auth.uid == resource.data.callerId ||
+                             request.auth.uid == resource.data.recipientId);
+
+      allow create: if isSignedIn() &&
+                      request.auth.uid == request.resource.data.callerId;
+
+      allow update: if isSignedIn() &&
+                      (request.auth.uid == resource.data.callerId ||
+                       request.auth.uid == resource.data.recipientId);
     }
   }
 }
