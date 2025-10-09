@@ -1935,7 +1935,14 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         code: error?.code,
                         message: error?.message,
                         chatId: selectedChat?.id,
-                        userId: user?.uid
+                        userId: user?.uid,
+                        attachment: attachmentToSend
+                            ? {
+                                  name: attachmentToSend.name,
+                                  size: attachmentToSend.size,
+                                  type: attachmentToSend.type
+                              }
+                            : null
                     });
                     setNewMessage(messageText);
                     if (attachmentToSend) {
