@@ -18,7 +18,7 @@ service cloud.firestore {
       return chatDoc(chatId).data.participants;
     }
 
-    function isChatParticipant(chatId) {
+    function isParticipantOfChat(chatId) {
       return isSignedIn() &&
              chatExists(chatId) &&
              request.auth.uid in chatParticipants(chatId);
@@ -67,7 +67,7 @@ service cloud.firestore {
              (!newData.deletedAt || newData.deletedAt == oldData.deletedAt || newData.deletedAt is timestamp) &&
              newData.downloadedBy is list &&
              newData.downloadedBy.hasOnly(chatParticipants(chatId)) &&
-             oldData.downloadedBy.hasOnly(newData.downloadedBy) &&
+             newData.downloadedBy.hasAll(oldData.downloadedBy) &&
              newData.downloadedBy.size() <= oldData.downloadedBy.size() + 1;
     }
 
@@ -91,13 +91,27 @@ service cloud.firestore {
     }
 
     match /chats/{chatId} {
-      allow read, update, delete: if isChatParticipant(chatId);
-      allow create: if isSignedIn();
+      allow read: if isSignedIn() &&
+                     resource.data.participants is list &&
+                     request.auth.uid in resource.data.participants;
+
+      allow create: if isSignedIn() &&
+                       request.resource.data.participants is list &&
+                       request.auth.uid in request.resource.data.participants;
+
+      allow update: if isSignedIn() &&
+                       resource.data.participants is list &&
+                       request.auth.uid in resource.data.participants &&
+                       request.resource.data.participants == resource.data.participants;
+
+      allow delete: if isSignedIn() &&
+                       resource.data.participants is list &&
+                       request.auth.uid in resource.data.participants;
 
       match /messages/{messageId} {
-        allow read: if isChatParticipant(chatId);
+        allow read: if isParticipantOfChat(chatId);
 
-        allow create: if isChatParticipant(chatId) &&
+        allow create: if isParticipantOfChat(chatId) &&
                         request.resource.data.senderId == request.auth.uid &&
                         request.resource.data.timestamp is timestamp &&
                         allowedMessageType(request.resource.data) &&
@@ -105,7 +119,7 @@ service cloud.firestore {
                         validAudioMessage(request.resource.data) &&
                         (!isAttachmentMessage(request.resource.data) || validAttachmentCreate(request.resource.data));
 
-        allow update: if isChatParticipant(chatId) &&
+        allow update: if isParticipantOfChat(chatId) &&
                         request.resource.data.senderId == resource.data.senderId &&
                         request.resource.data.type == resource.data.type &&
                         request.resource.data.timestamp == resource.data.timestamp &&
@@ -115,11 +129,11 @@ service cloud.firestore {
                           (!isAttachmentMessage(resource.data) && request.resource.data == resource.data)
                         );
 
-        allow delete: if isChatParticipant(chatId);
+        allow delete: if isParticipantOfChat(chatId);
       }
 
       match /typing/{statusId} {
-        allow read, write: if isChatParticipant(chatId);
+        allow read, write: if isParticipantOfChat(chatId);
       }
     }
 
