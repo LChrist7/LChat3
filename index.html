@@ -1849,6 +1849,13 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                         const safeFileName = attachmentToSend.name.replace(/[^a-zA-Z0-9._-]/g, '_');
                         const attachmentType = resolveAttachmentType(attachmentToSend.type);
                         const storagePath = `${ATTACHMENT_STORAGE_PREFIX}/${selectedChat.id}/${Date.now()}_${safeFileName}`;
+                        console.log('[AttachmentUpload] Preparing upload', {
+                            chatId: selectedChat.id,
+                            userId: user.uid,
+                            size: attachmentToSend.size,
+                            type: attachmentToSend.type || 'unknown',
+                            storagePath
+                        });
                         const storageRef = ref(window.firebaseStorage, storagePath);
 
                         await uploadBytes(storageRef, attachmentToSend, {
@@ -1911,7 +1918,13 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     }, { merge: true });
 
                 } catch (error) {
-                    console.error('Ошибка отправки сообщения:', error);
+                    console.error('Ошибка отправки сообщения:', {
+                        error,
+                        code: error?.code,
+                        message: error?.message,
+                        chatId: selectedChat?.id,
+                        userId: user?.uid
+                    });
                     setNewMessage(messageText);
                     if (attachmentToSend) {
                         setSelectedAttachment(attachmentToSend);
