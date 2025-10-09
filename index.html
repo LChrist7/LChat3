@@ -1901,7 +1901,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                     await setDoc(chatRef, {
                         lastMessage: lastMessagePreview || '',
                         lastMessageTime: serverTimestamp(),
-                        [unreadCount.]: (selectedChat.unreadCount?.[otherUserId] || 0) + 1,
+                        [`unreadCount.${otherUserId}`]: (selectedChat.unreadCount?.[otherUserId] || 0) + 1,
                         deletedFor: arrayRemove(user.uid, otherUserId)
                     }, { merge: true });
 
