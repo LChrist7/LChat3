@@ -2784,7 +2784,13 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                                                                 handleTyping();
                                                             }}
                                                             onKeyPress={handleKeyPress}
-                                                            placeholder={���?�?�+�%��?��� �?�>�? ...}
+                                                            placeholder={
+                                                                selectedChat
+                                                                    ? `Write a message to ${
+                                                                          selectedChat.participantsData?.[selectedChat.participants.find(id => id !== user.uid)] || ''
+                                                                      }...`
+                                                                    : 'Write a message...'
+                                                            }
                                                             rows="1"
                                                             className="flex-1 px-3 sm:px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none resize-none"
                                                             style={{ minHeight: '44px', maxHeight: '120px' }}
