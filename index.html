@@ -1846,8 +1846,9 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
                             throw new Error('Максимальный размер вложения 5 МБ');
                         }
 
+                        const safeFileName = attachmentToSend.name.replace(/[^a-zA-Z0-9._-]/g, '_');
                         const attachmentType = resolveAttachmentType(attachmentToSend.type);
-                        const storagePath = ${ATTACHMENT_STORAGE_PREFIX}//_;
+                        const storagePath = `${ATTACHMENT_STORAGE_PREFIX}/${selectedChat.id}/${Date.now()}_${safeFileName}`;
                         const storageRef = ref(window.firebaseStorage, storagePath);
 
                         await uploadBytes(storageRef, attachmentToSend, {
@@ -1857,7 +1858,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, query, where, orderBy, o
 
                         lastMessagePreview = getAttachmentLabel(attachmentType);
                         if (trimmedMessage) {
-                            lastMessagePreview = ${lastMessagePreview}: ;
+                            lastMessagePreview = `${lastMessagePreview}: ${trimmedMessage}`;
                         }
 
                         messagePayload = {
